@@ -145,7 +145,9 @@ multiple repositories and linked Git checkouts, merge failures, export safety,
 Git index/branch isolation, serialized builds, timeouts, authenticated daemon/MCP,
 and package contents. CI runs on Windows x64 and macOS. A `v*` tag builds only a
 Windows x64 executable and packages it through the Rust `vwork package` command.
-See [release procedure](docs/releasing.md).
+See [release procedure](docs/releasing.md) and the [validation record](docs/validation.md).
+Third-party notices for the Windows dependency tree are in
+[docs/third-party-notices.txt](docs/third-party-notices.txt).
 
 This package does not include a general Windows Explorer replacement or raw NTFS
 size scanner. `workspace_size` covers virtual source; disk-wide scanning is a

@@ -1,11 +1,44 @@
 use crate::model::{Entry, Repository, Tree};
 use anyhow::{Context, Result, bail, ensure};
 use std::io::{BufRead, BufReader, Read, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+/// Git for Windows expects its own normalized path syntax, not Rust's verbatim prefix.
+pub fn path_argument(path: &Path) -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let raw: Vec<u16> = path.as_os_str().encode_wide().collect();
+        let prefix: Vec<u16> = "\\\\?\\".encode_utf16().collect();
+        let unc: Vec<u16> = "\\\\?\\UNC\\".encode_utf16().collect();
+        let mut result = if raw.starts_with(&unc) {
+            let mut normal: Vec<u16> = "//".encode_utf16().collect();
+            normal.extend_from_slice(&raw[unc.len()..]);
+            normal
+        } else if raw.starts_with(&prefix) {
+            raw[prefix.len()..].to_vec()
+        } else {
+            raw
+        };
+        for c in &mut result {
+            if *c == u16::from(b'\\') {
+                *c = u16::from(b'/');
+            }
+        }
+        std::ffi::OsString::from_wide(&result)
+    }
+    #[cfg(not(windows))]
+    {
+        path.as_os_str().to_owned()
+    }
+}
 
 pub fn command(repo: &Repository) -> Command {
     let mut cmd = Command::new("git");
-    cmd.arg("--git-dir").arg(&repo.git_dir);
+    cmd.args(["-c", "core.longpaths=true"])
+        .arg("--git-dir")
+        .arg(path_argument(&repo.git_dir));
     // Never inherit caller index/worktree overrides or interactive Git behavior.
     for key in [
         "GIT_INDEX_FILE",

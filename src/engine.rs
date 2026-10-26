@@ -370,7 +370,7 @@ impl Engine {
                 let root = PathBuf::from(string(a, "path")?).canonicalize()?;
                 let out = Command::new("git")
                     .arg("-C")
-                    .arg(&root)
+                    .arg(git::path_argument(&root))
                     .args(["rev-parse", "--show-toplevel"])
                     .output()?;
                 ensure!(
@@ -384,7 +384,7 @@ impl Engine {
                 );
                 let out = Command::new("git")
                     .arg("-C")
-                    .arg(&root)
+                    .arg(git::path_argument(&root))
                     .args(["rev-parse", "--absolute-git-dir"])
                     .output()?;
                 ensure!(out.status.success(), "cannot resolve git directory");

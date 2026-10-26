@@ -603,3 +603,28 @@ fn export_retention() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn git_path_arguments() {
+    #[cfg(windows)]
+    {
+        use std::path::Path;
+        assert_eq!(
+            vwork::git::path_argument(Path::new(r"\\?\C:\repo\.git")),
+            "C:/repo/.git"
+        );
+        assert_eq!(
+            vwork::git::path_argument(Path::new(r"\\?\UNC\server\share\repo")),
+            "//server/share/repo"
+        );
+        assert_eq!(
+            vwork::git::path_argument(Path::new(r"C:\repo with spaces")),
+            "C:/repo with spaces"
+        );
+    }
+    #[cfg(not(windows))]
+    assert_eq!(
+        vwork::git::path_argument(std::path::Path::new("/tmp/repo")),
+        "/tmp/repo"
+    );
+}
