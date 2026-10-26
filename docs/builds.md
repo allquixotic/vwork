@@ -31,7 +31,7 @@ The model calls `vwork_workspace_run_task` with its workspace, current
 `<home>/build/mono`, runs the configured executable with argument-array semantics
 and returns success, exit code, timeout, captured output and revision.
 
-For `.cmd`/`.bat` scripts, explicitly configure `cmd.exe` and arguments such as
+For custom `.cmd`/`.bat` scripts, explicitly configure `cmd.exe` and arguments such as
 `["/D", "/C", "your-script.cmd"]`; do not assume a Unix shell. Task programs can
 be arbitrary native tools; only the orchestration supplied by vwork is Rust.
 
@@ -48,13 +48,64 @@ incremental caches. Empty obsolete directories are removed. A newly tracked path
 that would overwrite an existing untracked file fails visibly. An explicit clean
 of the stopped build tree is appropriate after branch-sensitive cache failures.
 
-The physical source tree is an export, **not a registered Git worktree** and has no
-`.git` directory. Builds that run Git for version metadata must accept an explicit
-version/revision input or need a future separate-index checkout integration. The
-environment includes `VWORK_WORKSPACE` and `VWORK_REVISION`; the latter is a virtual
-revision UUID, not a Git SHA. `workspace_info` reports the base Git SHA. Do not
-point `GIT_DIR` at your original checkout to make tests run: that can mix the
-original index with the exported source.
+Package projects use the same checkout and lock. See [npm, Cargo and pip](packages.md)
+for managed actions; custom tasks remain useful for other tools and unusual flags.
+
+## Git version discovery without a clone
+
+The build tree contains a regular `.git` **pointer file**. Its private admin
+directory is `<home>/build-git/<repo>`. No symlink or `git worktree add` is needed.
+Git's `objects/info/alternates` mechanism borrows the registered repository's
+existing objects. vwork owns a separate index, detached HEAD, config and refs;
+it does not copy the original object database or mutate the original index,
+branch or working files during build preparation.
+
+Before each task or package action:
+
+1. HEAD becomes the workspace's real **base Git commit**.
+2. Heads, tags and remote-tracking ref names/OIDs are refreshed from the source.
+3. The private index becomes the complete virtual snapshot. Compressed overlay
+   content gets Git objects only in the private admin directory.
+4. Git-aware tools run normally from the build tree or a project subdirectory.
+
+| Command in a build | Meaning |
+|---|---|
+| `git rev-parse HEAD` / `--short HEAD` | Actual base commit, not virtual revision UUID |
+| `git rev-parse --show-toplevel` | Shared physical build root |
+| `git describe --tags --always` | Description of the base using available tags/history |
+| `git describe --tags --always --dirty` | Adds dirty suffix for virtual differences or physical edits |
+| `git diff --cached` | Virtual snapshot versus base |
+| `git diff` | Physical task edits versus the virtual snapshot |
+
+`git describe` without `--tags` follows Git's normal annotated-tag rules. Without
+an appropriate tag it may fail; choose `--always` if a hash fallback is wanted.
+Builds that need a unique identity for every virtual edit should use
+`VWORK_REVISION` in addition to the Git SHA. This design does not synthesize a Git
+commit per virtual revision. `rev-parse --abbrev-ref HEAD` therefore says `HEAD`.
+
+Tasks receive `VWORK_WORKSPACE`, `VWORK_REVISION`, `VWORK_BASE_COMMIT`,
+`VWORK_BUILD_ROOT` and `VWORK_GIT_DIR`. Inherited Git directory/index overrides are
+removed before launch. Do not point Git at your original index. Local source Git
+config, remotes and hooks are not copied. Private hooks are disabled. Native Git
+mutations affect this disposable build view, not the virtual workspace, and the
+next run reconstructs its HEAD/index/refs. Use virtual operations for agent work.
+
+The source repository must remain available. Its existing base pins keep required
+history alive. Overlay Git objects consume additional disk space, as does one
+index; they are shared by all builds of that repo. When the daemon is stopped,
+`<home>/build-git/<repo>` can be removed and will be regenerated. The physical
+source tree is still needed by ordinary compilers; Git metadata borrowing does
+not make those compilers read redb directly.
+
+## Task results and supervision
+
+Results include `checkout`, `git_dir`, `base_commit`, `revision`, and
+`source_changes`. The latter lists tracked source edits/deletions relative to the
+virtual snapshot, bounded by `max_results`, with `source_changes_truncated`.
+Package actions additionally detect known manifest/lockfile creation. Arbitrary
+new generated files are not all enumerated; name any wanted new source files
+explicitly when importing. Import needed edits **before another task** repairs or
+switches the checkout. The result's revision is the import's expected revision.
 
 On timeout the process tree is terminated using Unix process groups or a Windows
 Job Object. Descendants are also terminated after the parent exits so inherited

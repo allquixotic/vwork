@@ -13,6 +13,10 @@ Source lives in vwork, not the original checkout or the current shell directory.
 - Fork before independent work. Never mutate another agent's workspace without assignment.
 - Native tools see a different filesystem. Do not use shell, grep, rg, find, cat, native file editors, or native Git to operate on virtual source.
 - Builds/tests use `vwork_workspace_run_task` and a human-configured task name. Report tested revision, success, exit status and any truncated output accurately.
+- npm/Cargo/pip use `vwork_package_list` and `vwork_package_run` with a configured project/action. Do not run package managers in a shell or install packages into virtual paths.
+- Build tasks and package actions share one physical checkout per repo. Native Git there reports the base commit as HEAD; virtual edits are staged and make `git describe --dirty` dirty. It is not the original checkout.
+- Inspect returned `source_changes` and package `input_changes`. Import needed manifest/lockfile/source edits with explicit paths and the returned revision before another build switches or repairs the checkout. Never import node_modules, target directories, virtual environments or caches.
+- If package inputs change, run its install action before npm scripts or pip actions. Missing package projects require human configuration; do not invent executable overrides.
 - Use `vwork_workspace_export` only when physical files are requested or required. Exports are separate from the original checkout.
 - Import physical edits only using explicit paths and the matching exported revision.
 - Export a Git commit using `vwork_workspace_commit`. This creates a private ref; it does not push or move the original branch.

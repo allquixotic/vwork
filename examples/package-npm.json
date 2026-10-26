@@ -1,0 +1,8 @@
+{
+  "repo": "mono",
+  "name": "web",
+  "manager": "npm",
+  "path": "apps/web",
+  "scripts": ["build", "test", "lint"],
+  "offline": false
+}

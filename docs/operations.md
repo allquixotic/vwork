@@ -48,9 +48,11 @@ Use forward slashes for all **virtual** paths, on every OS.
 | `workspace_import` | `expected_revision`, `source`, `paths` | Explicit physical edits/deletions |
 | `task_list` | `repo` | Human-defined build/test tasks |
 | `workspace_run_task` | `expected_revision`, `task` | Serialized build of pinned snapshot |
+| `package_list` | `repo` | Configured npm/Cargo/pip projects and allowed actions |
+| `package_run` | `expected_revision`, `project`, `action` | Serialized package action; reports physical source/input changes |
 | `workspace_drop` | `expected_revision` | Remove one workspace reference |
 
-`repo_list`, `repo_log`, `workspace_list` and `task_list` do not use a workspace.
+`repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.
 A newly created workspace requires a new explicit ID, even when the bridge is
 bound to another existing one.
 
@@ -69,7 +71,7 @@ Common replacements:
 | `git merge` | `workspace_merge` (whole-file conflict semantics) |
 | `git commit` | `workspace_commit` (snapshot export semantics) |
 | recursive disk-size scan of source | `workspace_size` (logical, not allocated size) |
-| `cargo test`, build command | `workspace_run_task` |
+| `npm ci`, `cargo test`, `pip install`, etc. | `package_run` or configured `workspace_run_task` |
 
 ## Edits and revisions
 
@@ -111,6 +113,7 @@ These are deliberately absent from the MCP tool list:
 | `health` | none | Version/schema/compression |
 | `repo_register` | `repo`, `path` | Register existing non-bare Git checkout |
 | `task_set` | `repo`, `name`, `program`, optional `args`, `cwd`, `timeout_seconds`, `env` | Save/replace allowed task |
+| `package_configure` | `repo`, `name`, `manager`, optional `path`, `program`, `args`, `env`, `offline`, `requirements`, `inputs`, `scripts` | Save/replace package project; see [package guide](packages.md) |
 | `stats` | none | DB file size, blob count/compressed bytes, revision/workspace/repo counts |
 | `workspace_squash` | `workspace`, `expected_revision` | Detach this workspace's old history while preserving current content |
 | `export_forget` | `repo`, `revision` | Remove DB retention pin for a Git-exported snapshot; preserve actual Git commit/ref |
@@ -150,6 +153,14 @@ directories; vwork recreates them on the next build. Remove physical exports onl
 when their edits are no longer needed. Their deletion uses the normal filesystem;
 the cheap-deletion guarantee applies to virtual workspaces, not materialized trees.
 
+`package_run` with `action: "clean"` removes the selected project's node_modules,
+Cargo target directory or Python environment under the same repo lock. This also
+invalidates its prepared dependency state. With the daemon stopped you may remove
+`<home>/build-git/<repo>` to reclaim cached overlay Git objects; it is rebuilt on
+demand. Wheel artifacts under `<home>/artifacts` are disposable after use. Global
+package-manager caches have their own maintenance commands and are not redb GC.
+If you manually remove a dependency environment, run its install action again.
+
 There is no online automatic eviction of source history or base manifests. For an
 entirely retired dataset, retain a verified backup, stop its daemon, and remove
 its state directory as a deliberate human action. A fresh state directory can
@@ -172,6 +183,11 @@ register the existing original repos again.
 - **Commit export failed:** configure Git user.name/user.email in the original repo.
 - **Build needs ignored config:** create it explicitly in the build directory or
   arrange it in your approved task. It is not imported from the original checkout.
+- **Package inputs not prepared:** run that project's install action, import any
+  reported manifest/lockfile edits, then retry with the current revision.
+- **Python venv creation fails:** configure `program` to an installed Python that
+  supports copied virtual environments and ensurepip; test `python -m venv --copies`
+  with that interpreter. See [package prerequisites](packages.md).
 - **Disk full:** stop creating builds/exports. Free disposable artifacts, then use
   GC and offline compaction. Successful transactions are durable; a failed write
   is not reported as success. Back up before recovery operations.

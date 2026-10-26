@@ -11,9 +11,10 @@ Builds use **one serialized physical source tree per registered repository**.
 
 **This is an initial implementation, not a filesystem driver.** Native editors,
 compilers and shell commands cannot see a virtual workspace until you export it.
-Agent file operations use MCP. No administrator rights, symlinks, mount drivers,
-Docker, Node or Python runtime are required. An existing Git installation is
-required. All supplied executables are Rust; zstd's native library is linked into
+Agent file operations use MCP. vwork needs no administrator rights, symlinks,
+mount drivers, Docker, Node or Python runtime. An existing Git installation is
+required. Optional package actions use your installed npm, Cargo or Python/pip.
+All supplied executables are Rust; zstd's native library is linked into
 the executable. Workstation execution policy must permit your binary to run.
 
 ## Get it
@@ -21,7 +22,7 @@ the executable. Workstation execution policy must permit your binary to run.
 Download `vwork-windows-x64.zip` from
 [GitHub Releases](https://github.com/allquixotic/vwork/releases/latest), or use the
 [S3 mirror](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip).
-The v0.1.0 ZIP is 3,131,804 bytes; both copies have the same SHA-256.
+Each release includes `SHA256SUMS`; the S3 mirror contains the same ZIP.
 Extract it into a user-writable folder. The program is `vwork/bin/vwork.exe`; the
 ZIP also contains source, documentation, examples and build workflows.
 
@@ -104,6 +105,11 @@ partially changing the workspace.
   branch, index or working files.
 - Explicit full/filtered exports and import of explicitly selected physical edits.
 - Human-defined build/test tasks with timeouts, bounded output and per-repo locks.
+- A private Git index/HEAD for that build tree, borrowing existing Git objects.
+  `git describe`, `git rev-parse` and Git-aware build scripts work without cloning
+  the repository's object database. Virtual edits appear staged and dirty.
+- Configured npm, Cargo and pip projects with install/build/test actions, reusable
+  caches, dependency-input checks and explicit lockfile/source writeback.
 - Logical directory-size reports, global storage stats, GC, history squash and
   offline redb compaction.
 - Generated Goose recipe/config fragment, consumer `AGENTS.md` and native
@@ -112,6 +118,7 @@ partially changing the workspace.
 See [all operations and examples](docs/operations.md),
 [storage and concurrency](docs/architecture.md),
 [builds and physical exports](docs/builds.md), and
+[npm, Cargo and pip setup](docs/packages.md). Also see
 [limits, recovery and disk maintenance](docs/operations.md#maintenance).
 
 ## Configuration
@@ -144,8 +151,11 @@ cargo test --locked --all-targets
 
 Tests cover persistence, fork isolation/deduplication, concurrent conflicts,
 multiple repositories and linked Git checkouts, merge failures, export safety,
-Git index/branch isolation, serialized builds, timeouts, authenticated daemon/MCP,
-and package contents. CI runs on Windows x64 and macOS. A `v*` tag builds only a
+Git index/branch/object isolation, version discovery, serialized builds, timeouts,
+offline npm/Cargo/pip fixtures, authenticated daemon/MCP, and ZIP contents.
+The integration suite needs installed Git, stable Rust, npm and a Python that
+supports `venv --copies` with pip. Set `VWORK_TEST_PYTHON` to select the interpreter.
+CI runs on Windows x64 and macOS. A `v*` tag builds only a
 Windows x64 executable and packages it through the Rust `vwork package` command.
 See [release procedure](docs/releasing.md) and the [validation record](docs/validation.md).
 Third-party notices for the Windows dependency tree are in

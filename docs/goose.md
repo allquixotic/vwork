@@ -124,6 +124,12 @@ Verify that it uses only vwork tools. Then fork a disposable workspace, make a
 small edit, request its diff, and drop the disposable workspace. Finally register
 a build task and verify the returned revision/exit status.
 
+For package workflows, configure a project with the human CLI, then have Goose
+call `vwork_package_list` and `vwork_package_run`. Import any needed lockfile changes
+before the next action. Regenerate the recipe/AGENTS files after upgrading from
+0.1.0 so the new package guidance is included; the MCP tools refresh on reconnect.
+See [npm, Cargo and pip setup](packages.md).
+
 The repository tests the actual stdio transport and hook decision function. It
 does not provision an LLM account or assert a particular model's behavior in a
 live Goose conversation. This final client smoke test belongs on your AVD.

@@ -57,6 +57,10 @@ The Windows state directory inherits its parent ACL; use your private profile.
   connection.json      # current loopback URL/token/PID; do not publish
   daemon.log           # background owner diagnostics
   build/<repo>/        # single reusable physical source tree, created on demand
+  build-git/<repo>/    # private Git admin/index; alternates borrow source objects
+  targets/<repo>/<project>/       # Cargo build outputs
+  environments/<repo>/<project>/  # copied Python virtual environment
+  artifacts/<repo>/<project>/     # built Python wheels
 ```
 
 The version-1 schema is a string-keyed table `records_v1`:
@@ -69,6 +73,7 @@ The version-1 schema is a string-keyed table `records_v1`:
 | `v/` | Immutable revisions and path overlays |
 | `b/` | BLAKE3-keyed zstd blobs |
 | `task/`, `run/` | Human-configured tasks and bounded retained results |
+| `project/`, `package-state/` | Package projects and successful dependency-input fingerprints |
 | `export/` | Pins for snapshots exported as Git commits |
 
 Git base pins live under `refs/vwork/bases/<repo>/<commit>` in the original Git
@@ -80,7 +85,21 @@ intentional writes to its Git database.
 Do not remove/move the original repo while workspaces depend on it. Restoring only
 the redb file is insufficient; base Git objects are dependencies. Back up the
 stopped state directory **and** every registered Git repository/object store.
-Registered repo relocation and schema migration are not implemented in v0.1.
+Registered repo relocation and schema migration are not implemented.
+
+The build view has a regular `.git` pointer to its own admin directory. Its index
+holds the virtual snapshot; detached HEAD holds the base commit. An alternates
+file borrows source objects, while changed overlay blobs are written only to the
+private Git store. Ref names/OIDs are refreshed for native version discovery.
+This costs one index and cached overlay Git objects per repository, not a full
+clone of its history. The Git view and physical build tree are disposable and
+reconstructed before each task. See [Git build semantics](builds.md#git-version-discovery-without-a-clone).
+
+Package actions share that repo's lock and source tree. Their dependency-input
+fingerprints are durable redb records; node_modules, target files and Python
+environments are ordinary disk files outside redb. Package actions never publish
+source edits implicitly. [The package guide](packages.md) describes reuse,
+invalidation and explicit import. No automatic cache quota or eviction is provided.
 
 ## Resource limits
 

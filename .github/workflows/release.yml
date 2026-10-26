@@ -11,8 +11,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Stable Rust
         run: rustup update stable --no-self-update
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Validate
         shell: pwsh
+        env:
+          VWORK_TEST_PYTHON: python
         run: |
           cargo +stable fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

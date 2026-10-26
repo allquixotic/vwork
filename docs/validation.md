@@ -1,4 +1,38 @@
-# Validation record — 0.1.0
+# Validation record
+
+## 0.2.0
+
+Local validation on 2026-10-26 uses the same Apple Silicon Mac and stable Rust
+toolchain described below. The full suite passes **24 integration tests**,
+including real offline npm, Cargo and pip fixtures. Formatting and strict Clippy
+also pass.
+
+`build_git_metadata` verifies annotated-tag discovery, base HEAD, dirty state for
+added/modified/deleted virtual files, the private index/alternates arrangement,
+accurate physical change reports and unchanged original index/HEAD/object count.
+`package_workflows` compiles/tests a Rust project whose build.rs calls Git and
+checks the managed target directory. `package_writeback` installs an npm fixture,
+imports its generated lockfile, runs a Node script and checks invalidation.
+`package_input_changes` creates a copied Python venv, installs empty offline
+requirements, runs pip check, recreates the environment after input changes and
+cleans it. Protocol tests keep package configuration outside model tools.
+
+The Mac test command selects an installed Python compatible with copied venvs:
+
+```sh
+VWORK_TEST_PYTHON=/absolute/path/to/python3 cargo +stable test --locked --all-targets
+```
+
+The first standalone Python on this Mac's PATH cannot load its libpython after
+`venv --copies`; this also fails outside vwork. The installed Miniconda Python
+passes. CI selects Python 3.12 and Node 22 explicitly on Windows/macOS. These are
+test dependencies, not files bundled into the release.
+
+Cross-platform CI and release artifact verification are recorded below after
+publication. Corporate AVD execution policy and arbitrary third-party package
+install scripts are not reproduced by these fixtures.
+
+## 0.1.0 historical validation
 
 Local validation on 2026-10-26 used an Apple Silicon Mac (`arm64`) and
 `rustc 1.99.1 (58cf8f9c3 2026-10-13)`.
