@@ -44,7 +44,7 @@ T4|x|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V
 
 T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
 T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
-T7|~|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
+T7|x|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
 
 # §B
 id|date|cause|fix

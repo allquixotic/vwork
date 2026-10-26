@@ -29,9 +29,27 @@ The first standalone Python on this Mac's PATH cannot load its libpython after
 passes. CI selects Python 3.12 and Node 22 explicitly on Windows/macOS. These are
 test dependencies, not files bundled into the release.
 
-Cross-platform CI and release artifact verification are recorded below after
-publication. Corporate AVD execution policy and arbitrary third-party package
-install scripts are not reproduced by these fixtures.
+- [Source CI on Windows and macOS](https://github.com/allquixotic/vwork/actions/runs/40376971645): passed on commit `cb6ede3`, including all 25 tests.
+- [Tagged Windows release workflow](https://github.com/allquixotic/vwork/actions/runs/40377488745): passed validation, optimized build and native daemon lifecycle smoke test.
+- [Release v0.2.0](https://github.com/allquixotic/vwork/releases/tag/v0.2.0).
+- [Verified S3 ZIP](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip).
+
+The ZIP contains 42 entries, is 3,216,260 bytes, and includes one executable:
+`vwork/bin/vwork.exe` (7,413,760 bytes; Windows x64 PE). CRC and SHA256SUMS
+verification passed. Its imports are Windows system DLLs; there is no separate
+MSVC runtime or zstd DLL dependency. Source, package examples and updated agent
+guidance are included. No macOS or Linux binaries are published.
+
+SHA-256:
+
+```text
+ba8e2d66399ba09bd868b0d3edc262f19c9012d901473b5a70a21fee23cfa138
+```
+
+The S3 copy uses REDUCED_REDUNDANCY. Anonymous HEAD and a complete anonymous HTTPS
+download passed size/hash checks; anonymous bucket listing returned 403. The
+optimized Mac build also passes. Corporate AVD execution policy and arbitrary
+third-party package install scripts are not reproduced by these fixtures.
 
 ## 0.1.0 historical validation
 
@@ -80,6 +98,9 @@ AVD policy environment require the consumer smoke test in `goose.md`. They are
 not simulated or claimed as verified here.
 
 ## Published artifact
+
+This subsection records 0.1.0. The stable S3 URL now serves the latest ZIP;
+use the GitHub v0.1.0 release for the historical artifact described here.
 
 - [Final source CI, Windows and macOS](https://github.com/allquixotic/vwork/actions/runs/40374269796): passed.
 - [Windows release workflow](https://github.com/allquixotic/vwork/actions/runs/40374319348): passed, including native `start`, `doctor` and `stop`.
