@@ -256,31 +256,49 @@ pub fn tools(bound: bool) -> Vec<Value> {
     out
 }
 
+const NATIVE_TOOLS: &[&str] = &[
+    "shell",
+    "write",
+    "edit",
+    "tree",
+    "text_editor",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_directory",
+    "search_files",
+    "execute",
+    "run_command",
+];
+const NATIVE_PREFIXES: &[&str] = &["developer__", "filesystem__", "terminal__"];
+
+/// Goose applies this regex before starting a command hook. Share the blocked
+/// families with the hook so virtual tool calls don't pay for a shell process.
+pub fn hook_matcher() -> String {
+    let exact = NATIVE_TOOLS
+        .iter()
+        .map(|s| regex::escape(s))
+        .collect::<Vec<_>>()
+        .join("|");
+    let prefixes = NATIVE_PREFIXES
+        .iter()
+        .map(|s| regex::escape(s))
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("(?i)^(?:(?:{exact})$|(?:{prefixes}))")
+}
+
 pub fn hook(payload: &Value) -> Value {
     let name = payload
         .get("tool_name")
         .and_then(Value::as_str)
         .unwrap_or("");
     let lower = name.to_lowercase();
-    let native = [
-        "shell",
-        "write",
-        "edit",
-        "tree",
-        "text_editor",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_directory",
-        "search_files",
-        "execute",
-        "run_command",
-    ];
     let blocked = !lower.starts_with("vwork_")
-        && (native.contains(&lower.as_str())
-            || lower.starts_with("developer__")
-            || lower.starts_with("filesystem__")
-            || lower.starts_with("terminal__"));
+        && (NATIVE_TOOLS.contains(&lower.as_str())
+            || NATIVE_PREFIXES
+                .iter()
+                .any(|prefix| lower.starts_with(prefix)));
     if blocked {
         json!({"decision":"block","reason":"This session uses virtual source. Use vwork_files_* and vwork_workspace_* tools; native tools see a different filesystem. Use vwork_package_list/run for configured npm/Cargo/pip actions, or vwork_workspace_run_task for other builds. Import needed source_changes explicitly before the next action."})
     } else {

@@ -1,28 +1,30 @@
-vwork 0.2.1 is the first Azure-signed Windows release. GitHub Actions requires a
-valid Sean McNamara Authenticode signature and RFC 3161 timestamp before packaging
-and publication. The ZIP has SHA-256 checksums and GitHub provenance attestation;
-public signing evidence is included as a separate release asset.
+vwork 0.2.2 automatically starts its daemon when Goose loads the enabled MCP
+extension. Existing `vwork --home ... mcp --workspace ...` configuration works
+without a separate startup shortcut, in Fastrock and the Goose CLI.
 
-This release retains the native Git version discovery and npm/Cargo/pip workflows
-introduced in 0.2.0:
+- Running daemons are reused. Concurrent starts share one owner per state folder.
+- Startup and health checks have bounded waits; existing owners are never killed
+  or replaced. The daemon stays running after an MCP client exits.
+- `mcp --no-auto-start` preserves explicitly managed daemon startup.
+- Windows launches inherit only the daemon log and NUL input handles, keeping
+  MCP pipes independent of the shared daemon's lifetime.
+- Generated Goose hooks use a matcher before command execution, so ordinary
+  vwork calls avoid launching `sh`. Existing native-tool blocks and
+  `on_failure: block` remain in place for matching tools.
 
-- `git describe` and `git rev-parse` work through a private Git index/HEAD/refs
-  borrowing the original object store. History is not cloned. HEAD is the base
-  commit; virtual edits are staged and appear dirty.
-- Configure named package projects with `package_configure`; agents use the new
-  `vwork_package_list` / `vwork_package_run` tools. Cargo targets and copied Python
-  environments are reused per project; npm uses the shared source tree.
-- Dependency input checks, offline modes and explicit manifest/lockfile import
-  protect the virtual snapshot from accidental physical writeback.
+Upgrade: stop the old daemon, replace `vwork.exe` with this Azure-signed binary,
+and reconnect the enabled extension. To reduce hook overhead, regenerate the
+Goose setup with `vwork goose`, then merge the generated `plugin/hooks/hooks.json`
+into the installed plugin while preserving your customizations. The binary does
+not rewrite your Goose configuration. Developer remains disabled for vwork-only
+workflows. The database format is unchanged.
 
-Download **vwork-windows-x64.zip** and read `vwork/README.md` and
-`vwork/docs/packages.md`. It contains the native Windows x64 executable and all
-source/configuration/docs. Only Windows binaries are published. Git is required;
-optional package actions need their installed npm/Cargo/Python tools. No admin
-installation or symlinks are required by vwork itself.
+Workstation policy must allow the daemon process to start. If automatic launch
+is denied, keep the permitted manual startup route; no security-policy changes,
+elevation, or alternate launcher retries are attempted. Starting the daemon does
+not register repositories or create missing workspaces.
 
-Upgrade: stop the old daemon, back up your state, replace the executable, start
-again, and reconnect MCP clients. The existing version-1 database is compatible.
-Regenerate Goose recipe/AGENTS files to include package guidance. Builds still
-materialize one source tree per repo; package caches and outputs consume ordinary
-disk space. This release is not a filesystem driver or hermetic build sandbox.
+The Windows x64 ZIP contains the native executable, source, docs and configuration
+templates. Publication requires Azure Authenticode signing, publisher/timestamp
+verification, a native MCP cold-start/reuse smoke test, SHA-256 checksums and
+GitHub provenance attestation. Only Windows binaries are published.

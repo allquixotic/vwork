@@ -28,7 +28,7 @@ pub fn goose(home: &Path, workspace: &str, output: &Path) -> Result<()> {
         .to_string_lossy()
         .replace('\\', "/")
         .replace('\'', "'\"'\"'");
-    let hook = json!({"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":format!("'{executable}' hook"),"on_failure":"block"}]}]}});
+    let hook = json!({"hooks":{"PreToolUse":[{"matcher":crate::protocol::hook_matcher(),"hooks":[{"type":"command","command":format!("'{executable}' hook"),"on_failure":"block"}]}]}});
     let hooks = output.join("plugin/hooks");
     std::fs::create_dir_all(&hooks)?;
     std::fs::write(hooks.join("hooks.json"), serde_json::to_vec_pretty(&hook)?)?;

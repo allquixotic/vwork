@@ -1,3 +1,4 @@
+mod background;
 pub mod engine;
 pub mod git;
 pub mod integration;
@@ -6,4 +7,5 @@ mod job;
 pub mod model;
 pub mod packages;
 pub mod protocol;
+pub mod startup;
 pub mod transport;

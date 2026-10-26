@@ -27,6 +27,13 @@ not a measured optimum for every monorepo.
 ## One owner, many clients
 
 Only `vwork serve` opens the redb database. A file lock rejects a second owner.
+`start` and the default MCP entrypoint share a per-home startup lock, bounded
+authenticated health probes and daemon launch. A separate daemon lock protects
+existing owners and offline compaction. Startup never kills a nonresponsive owner,
+and MCP disconnect does not stop the shared daemon. Windows uses an explicit
+process handle allowlist (NUL stdin and daemon log only) so background children
+cannot retain a bridge's MCP pipes. Unix starts a separate session with redirected
+stdio. `mcp --no-auto-start` opts out of daemon creation.
 CLI processes and stdio MCP bridges connect to its authenticated loopback HTTP
 endpoint (explicitly bypassing HTTP proxy environment variables) using a generated token in `<home>/connection.json`. The daemon uses
 multiple request workers; redb serializes writes. A per-repository mutex

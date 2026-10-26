@@ -33,6 +33,8 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V13: Package-generated manifest/lock edits are reported for explicit import; virtual source never changes implicitly. Test `package_writeback`.
 - V14: Build source-change reports compare content against the virtual index; a rebuilt stat cache alone never marks files changed. Tests `build_git_metadata`, `package_workflows`.
 - V15: Package-tool path arguments and environment values use standard absolute paths; Windows NT verbatim prefixes stay internal. Tests `package_process_paths`, `package_input_changes`.
+- V16: Enabled MCP startup ! reuse or start one daemon per home with bounded probes/waits; MCP stdout ! JSON-RPC only; bridge exit ! keep shared owner alive; explicit opt-out ! no start; startup failure ! no owner takeover. Tests `v16_mcp_cold_start_and_reuse`, `v16_concurrent_starters`, `v16_startup_bounds`, `v16_mcp_opt_out`.
+- V17: Generated Goose hook matcher ! cover every blocked tool family; vwork calls ! skip hook process; selected hook ! retain on_failure=block. Tests `v17_generated_hook_matcher`, `protocol_and_hooks`.
 
 # §T
 id|status|task|cites
@@ -45,6 +47,7 @@ T4|x|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V
 T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
 T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
 T7|x|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
+T8|~|Automatic MCP daemon lifecycle, bounded concurrent startup, opt-out and hook matching; signed Windows CI release|V8,V10,V16,V17,I.rpc,I.goose,I.release
 
 # §B
 id|date|cause|fix
@@ -61,3 +64,4 @@ B9|2026-10-26|Regression fixture's generic im map left string conversion ambiguo
 B10|2026-10-26|Azure trust used legacy name-only subject while new repository emits immutable owner/repository IDs|Match observed GitHub OIDC subject to verified repository IDs; retain environment/tag restrictions; one-time identity provisioning fix
 B11|2026-10-26|Hosted Windows runner may omit PSGallery registration required by Azure signing action|Register default repository before signing; preserve failed tags and allow stable +build.N retries; publication still requires valid timestamped signature
 B12|2026-10-26|Goose docs incorrectly tied hints to Developer; obscured host/virtual file and skill/instruction boundaries|Verify 1.56.0 prompt builder/lookup; document global context setup with Developer disabled; documentation correction, no runtime invariant
+B13|2026-10-26|Windows background spawn inherited unrelated MCP/CLI pipe handles despite redirected stdio, preventing reader EOF after bridge exit|V16; explicit STARTUPINFOEX handle allowlist for NUL/log only; native Windows cold-start/exit and concurrent-start regressions

@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use vwork::{integration, protocol, transport};
+use vwork::{integration, protocol, startup, transport};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -29,10 +29,13 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         json: String,
     },
-    /// Serve MCP over stdio. Logs never go to stdout.
+    /// Serve MCP over stdio, starting the shared daemon if needed. Logs never go to stdout.
     Mcp {
         #[arg(long)]
         workspace: Option<String>,
+        /// Require an already-running daemon; never launch one from this bridge.
+        #[arg(long)]
+        no_auto_start: bool,
     },
     /// Native Goose PreToolUse policy hook; reads JSON on stdin.
     Hook,
@@ -77,42 +80,10 @@ fn run() -> Result<()> {
         }
         Commands::Serve => transport::serve(&home)?,
         Commands::Start => {
-            if transport::connect(&home, "health", &json!({})).is_ok() {
-                println!("already running");
-                return Ok(());
-            }
-            transport::initialize(&home)?;
-            let log = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(home.join("daemon.log"))?;
-            let mut cmd = std::process::Command::new(std::env::current_exe()?);
-            cmd.arg("--home")
-                .arg(&home)
-                .arg("serve")
-                .stdin(std::process::Stdio::null())
-                .stdout(log.try_clone()?)
-                .stderr(log);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000 | 0x00000008);
-            }
-            let mut child = cmd.spawn()?;
-            for _ in 0..100 {
-                if let Ok(v) = transport::connect(&home, "health", &json!({})) {
-                    println!("{v}");
-                    return Ok(());
-                }
-                if let Some(status) = child.try_wait()? {
-                    anyhow::bail!(
-                        "daemon exited {status}; inspect {}",
-                        home.join("daemon.log").display()
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            anyhow::bail!("daemon start timed out; inspect daemon.log");
+            println!(
+                "{}",
+                startup::ensure_started(&home, &std::env::current_exe()?)?
+            );
         }
         Commands::Stop => println!("{}", transport::connect(&home, "stop", &json!({}))?),
         Commands::Call {
@@ -132,7 +103,18 @@ fn run() -> Result<()> {
                 serde_json::to_string_pretty(&transport::connect(&home, &operation, &v)?)?
             );
         }
-        Commands::Mcp { workspace } => transport::mcp(&home, workspace.as_deref())?,
+        Commands::Mcp {
+            workspace,
+            no_auto_start,
+        } => {
+            if no_auto_start {
+                startup::health(&home, std::time::Duration::from_millis(500))
+                    .context("MCP auto-start is disabled; run vwork start first")?;
+            } else {
+                startup::ensure_started(&home, &std::env::current_exe()?)?;
+            }
+            transport::mcp(&home, workspace.as_deref())?;
+        }
         Commands::Hook => {
             let mut s = String::new();
             std::io::stdin().take(1024 * 1024).read_to_string(&mut s)?;

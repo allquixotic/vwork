@@ -52,9 +52,24 @@ The configured program is the absolute `vwork.exe` path, with arguments:
 --home <absolute-state-path> mcp --workspace task-one
 ```
 
-The stdio bridge requires the daemon to be running. Start it with `vwork start`
-before opening Goose. Do not launch `vwork serve` as the MCP command: serve is the
-shared database owner and uses an authenticated loopback HTTP endpoint.
+Since vwork **0.2.2**, the stdio bridge automatically reuses or starts the daemon
+when Goose loads this enabled extension. Existing `mcp --workspace ...` config
+works unchanged after upgrading vwork. Both Fastrock and Goose CLI sessions use
+this path; no startup shortcut or SessionStart hook is needed. Disabled extensions
+are not launched by Goose, so they do not trigger startup. This starts on extension
+load, not Windows login or merely detecting the installation in Fastrock's UI.
+
+For a manually managed daemon, append `--no-auto-start` to the MCP args and run
+`vwork start` yourself first. Do not launch `vwork serve` as the MCP command:
+serve is the shared database owner and uses an authenticated loopback HTTP endpoint.
+Repository registration and workspace creation remain explicit setup operations.
+
+Startup uses a per-home lock and authenticated health checks. Concurrent clients
+reuse one owner; closing a conversation does not stop it. Health probes are bounded
+to 500 ms and startup waits to 15 seconds. A locked, unresponsive owner is not killed
+or replaced. Failures go to MCP stderr and `daemon.log`, leaving stdout for JSON-RPC.
+If workstation policy refuses the daemon launch, vwork reports the error; retain
+your permitted manual startup route. It does not change policy or request elevation.
 
 Start a new Goose session after configuration changes. A recipe alone can leave
 other globally enabled extensions active, so use the configuration fragment too.
@@ -112,7 +127,13 @@ or to `.agents/plugins/vwork-policy/` beneath the directory from which you run
 Goose. Preserve `plugin.json` and `hooks/hooks.json`.
 
 The hook blocks known shell and physical-file tools and explains their virtual
-replacements. `on_failure: block` prevents a selected hook's runtime failure from
+replacements. Since 0.2.2, generated hooks include a Goose `matcher` for those
+same tool names/families. Goose checks it before spawning a command: vwork calls,
+skills and other already-allowed tools avoid the per-call `sh`/hook process cost.
+Matching native tools still run the hook. Regenerate your Goose setup and replace
+the installed `plugin/hooks/hooks.json` to apply this change; upgrading the binary
+alone does not rewrite installed configuration. Preserve local hook customizations.
+`on_failure: block` prevents a selected hook's runtime failure from
 silently allowing a call. Goose currently runs command hooks via `sh -c`; Windows
 therefore needs the shell used by your Goose installation (commonly Git Bash)
 available. The generated command uses forward slashes and shell quoting. The

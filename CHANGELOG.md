@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2
+
+- MCP automatically starts or reuses the shared daemon when an enabled extension
+  loads; `--no-auto-start` retains manual lifecycle management.
+- Bounded health/startup waits and per-home locks handle simultaneous clients,
+  stale connection metadata and existing database owners without takeover.
+- Windows daemon handle inheritance excludes MCP pipes; bridges exit cleanly
+  while their shared daemon stays running.
+- Generated Goose hook matchers skip process startup for vwork and other
+  already-allowed tools while retaining native-tool blocks and failure policy.
+
 ## 0.2.1
 
 - Windows releases use Azure Artifact Signing through GitHub OIDC, with mandatory

@@ -94,8 +94,14 @@ jobs:
         run: |
           $exe = 'target/x86_64-pc-windows-msvc/release/vwork.exe'
           $state = Join-Path $env:RUNNER_TEMP 'vwork-release-smoke'
+          $reply = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | & $exe --home $state mcp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $message = $reply | ConvertFrom-Json -ErrorAction Stop
+          if ($message.id -ne 1 -or $message.result.serverInfo.name -ne 'vwork') { throw 'Invalid MCP startup response' }
+          $owner = (Get-Content (Join-Path $state 'connection.json') -Raw | ConvertFrom-Json).pid
           & $exe --home $state start
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((Get-Content (Join-Path $state 'connection.json') -Raw | ConvertFrom-Json).pid -ne $owner) { throw 'Daemon was replaced instead of reused' }
           & $exe --home $state doctor
           $result = $LASTEXITCODE
           & $exe --home $state stop

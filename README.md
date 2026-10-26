@@ -22,7 +22,8 @@ the executable. Workstation execution policy must permit your binary to run.
 Download `vwork-windows-x64.zip` from
 [GitHub Releases](https://github.com/allquixotic/vwork/releases/latest), or use the
 [S3 mirror](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip).
-Each release includes `SHA256SUMS`; the S3 mirror contains the same ZIP.
+Each release includes `SHA256SUMS`; check the mirror's bundled version before use,
+since it may lag the latest GitHub release.
 Starting with 0.2.1, Windows binaries are Azure-signed for Sean McNamara with
 RFC 3161 timestamps, and the ZIP has GitHub provenance attestation. See the
 [release verification instructions](docs/releasing.md).
@@ -93,8 +94,11 @@ vwork mcp --workspace task-one       vwork CLI / other MCP bridges
            one build tree per repository
 ```
 
-`vwork start` launches the owner in the background. `vwork mcp` is a small bridge;
-multiple clients share the daemon and database. CLI and MCP return JSON, including
+`vwork start` launches the owner in the background. Since 0.2.2, `vwork mcp`
+automatically reuses or starts that owner when Goose loads the enabled extension.
+This works from Fastrock and the Goose CLI without a special startup shortcut.
+Use `mcp --no-auto-start` to require a manually managed daemon. Multiple clients
+share the daemon and database, which stay running when a bridge exits. CLI and MCP return JSON, including
 revision IDs needed for compare-and-swap edits. A stale edit fails without
 partially changing the workspace.
 

@@ -32,6 +32,16 @@ pub fn initialize(home: &Path) -> Result<()> {
     Ok(())
 }
 pub fn connect(home: &Path, op: &str, args: &Value) -> Result<Value> {
+    connect_with_timeout(home, op, args, std::time::Duration::from_secs(86400))
+}
+
+pub(crate) fn connect_with_timeout(
+    home: &Path,
+    op: &str,
+    args: &Value,
+    timeout: std::time::Duration,
+) -> Result<Value> {
+    ensure!(!timeout.is_zero(), "daemon request timed out");
     let c: Connection = serde_json::from_slice(
         &std::fs::read(home.join("connection.json"))
             .context("daemon not running; run vwork start")?,
@@ -49,7 +59,7 @@ pub fn connect(home: &Path, op: &str, args: &Value) -> Result<Value> {
     );
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .proxy(None)
-        .timeout_global(Some(std::time::Duration::from_secs(86400)))
+        .timeout_global(Some(timeout))
         .build()
         .into();
     let mut response = agent
@@ -178,7 +188,12 @@ pub fn serve(home: &Path) -> Result<()> {
 }
 pub fn mcp(home: &Path, bound: Option<&str>) -> Result<()> {
     if let Some(ws) = bound {
-        connect(home, "workspace_info", &json!({"workspace":ws}))?;
+        connect_with_timeout(
+            home,
+            "workspace_info",
+            &json!({"workspace":ws}),
+            std::time::Duration::from_secs(5),
+        )?;
     }
     let input = std::io::stdin();
     let mut output = std::io::BufWriter::new(std::io::stdout().lock());
