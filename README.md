@@ -23,6 +23,9 @@ Download `vwork-windows-x64.zip` from
 [GitHub Releases](https://github.com/allquixotic/vwork/releases/latest), or use the
 [S3 mirror](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip).
 Each release includes `SHA256SUMS`; the S3 mirror contains the same ZIP.
+Starting with 0.2.1, Windows binaries are Azure-signed for Sean McNamara with
+RFC 3161 timestamps, and the ZIP has GitHub provenance attestation. See the
+[release verification instructions](docs/releasing.md).
 Extract it into a user-writable folder. The program is `vwork/bin/vwork.exe`; the
 ZIP also contains source, documentation, examples and build workflows.
 

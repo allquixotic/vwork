@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- Windows releases use Azure Artifact Signing through GitHub OIDC, with mandatory
+  publisher and timestamp verification before packaging.
+- Public signing evidence, SHA-256 checksums and GitHub provenance attestations
+  accompany the Windows ZIP. Virtual workspace and database formats are unchanged.
+
 ## 0.2.0
 
 - Shared build checkouts now support native Git version discovery through a

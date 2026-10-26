@@ -1,5 +1,10 @@
-vwork 0.2.0 adds native Git version discovery and npm/Cargo/pip workflows to the
-shared build checkout.
+vwork 0.2.1 is the first Azure-signed Windows release. GitHub Actions requires a
+valid Sean McNamara Authenticode signature and RFC 3161 timestamp before packaging
+and publication. The ZIP has SHA-256 checksums and GitHub provenance attestation;
+public signing evidence is included as a separate release asset.
+
+This release retains the native Git version discovery and npm/Cargo/pip workflows
+introduced in 0.2.0:
 
 - `git describe` and `git rev-parse` work through a private Git index/HEAD/refs
   borrowing the original object store. History is not cloned. HEAD is the base
