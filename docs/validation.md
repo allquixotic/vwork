@@ -1,5 +1,31 @@
 # Validation record
 
+## 0.2.1 — signed stable release
+
+Verified 2026-10-26:
+
+- [Stable v0.2.1+build.1](https://github.com/allquixotic/vwork/releases/tag/v0.2.1%2Bbuild.1)
+  is public, latest and not a prerelease. Windows x64 is the only published binary.
+- [Release CI 40382242131](https://github.com/allquixotic/vwork/actions/runs/40382242131)
+  passed formatting, strict Clippy, all 25 integration tests, native build,
+  Azure OIDC login/signing, signature verification, signed lifecycle smoke test,
+  packaging and GitHub attestation verification. Source:
+  `a6899f7ec44bfa85f8975caf6e04de57557f44cc`. Main CI also passed both platforms.
+- Azure Artifact Signing used `allquixotic-signing/windows-public`. Authenticode
+  publisher: `CN=Sean McNamara, O=Sean McNamara, L=Pasadena, S=MD, C=US`.
+  Microsoft RFC 3161 timestamp verified. Certificate SHA-1:
+  `0063631B695A60361BF66A861649BD0CB7F91CB2`. Signed executable SHA-256:
+  `9d2b6e8fdd705d559060f782828a6c85ae1e46c04e43f6f9c5f17c811587a8dc`.
+- ZIP: 3,230,881 bytes; SHA-256:
+  `06898f230a0c69a682389813d1166915286405068c56478c16d35c9cc06ad4ce`.
+  Download matches SHA256SUMS and the signing evidence's executable hash.
+  GitHub provenance verification passed for the exact source/tag/workflow.
+- [S3 ZIP](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip)
+  matches the GitHub ZIP. The explicitly invoked ship-to-aws helper verified
+  anonymous HEAD and full-download SHA-256, REDUCED_REDUNDANCY storage and denied
+  anonymous bucket listing. Failed tag v0.2.1 remains unchanged; B10/B11 record
+  the corrected immutable-ID OIDC subject and explicit PSGallery registration.
+
 ## 0.2.0
 
 Local validation on 2026-10-26 uses the same Apple Silicon Mac and stable Rust
