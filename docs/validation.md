@@ -213,9 +213,9 @@ not a guarantee for another filesystem or workload.
 
 ## 0.3.0 — redb Git storage and temporary copies
 
-- [Final source CI 40418648903](https://github.com/allquixotic/vwork/actions/runs/40418648903)
+- [Tagged-source CI 40419171696](https://github.com/allquixotic/vwork/actions/runs/40419171696)
   passed formatting, strict Clippy and all **50 Windows / 49 macOS integration
-  tests** for `050c1972af36a469bd16607529f9b24d5af44092`, including the Git
+  tests** for `0b24894eac221782d70420c7f9cada962df35188`, including the Git
   membership regression and real offline uv sync/check and CDK synth/list fixtures.
 - Baseline Windows `v21_redb_owns_git` failed after source removal; the redb object
   backend now passes reads, history, commits and reopen without the original Git
@@ -239,3 +239,22 @@ not a guarantee for another filesystem or workload.
   and arbitrary third-party build scripts are outside these fixtures. Global
   package caches are not lease-owned; temporary copies have count/TTL limits, not
   an operating-system disk quota. Cleanup errors remain visible for retry.
+- [Stable v0.3.0](https://github.com/allquixotic/vwork/releases/tag/v0.3.0) was
+  published by [release CI 40419177762](https://github.com/allquixotic/vwork/actions/runs/40419177762).
+  The workflow independently passed all 50 Windows integration tests, built and
+  signed the executable, verified Sean McNamara's publisher and Microsoft RFC 3161
+  timestamp, and passed cold MCP startup, owner reuse, doctor and stop with the
+  signed executable before publication.
+- Downloaded ZIP: **4,220,070 bytes**, 55 entries and one Windows x64 executable.
+  CRC, SHA256SUMS, bundled version, Git/transport license files and the executable
+  hash in the signing evidence all match. GitHub provenance verification passed
+  with the exact repository, release workflow, `refs/tags/v0.3.0` and source
+  commit. Independent Windows `Get-AuthenticodeSignature` returned **Valid** for
+  the downloaded executable with the expected publisher and timestamp; its
+  version command returned `vwork 0.3.0`.
+  ZIP SHA-256:
+  `d5713d536867372cf5afe147293f3cff1d028681ff7e0f6c6950fc99be501cf0`.
+  Executable SHA-256:
+  `d063ab84f177b8fb80d76d48dc76d2cbea926d271586b8b5a816a74c18338839`.
+- S3's mutable key remains at the last explicitly requested upload (0.2.2).
+  Publishing this GitHub release does not invoke the manual-only upload skill.

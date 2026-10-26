@@ -55,7 +55,7 @@ T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
 T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
 T7|x|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
 T8|x|Automatic MCP daemon lifecycle, bounded concurrent startup, opt-out and hook matching; signed Windows CI release|V8,V10,V16,V17,I.rpc,I.goose,I.release
-T9|~|Suppress Windows helper consoles; expose storage-sharing evidence to MCP; signed Windows release|V8,V10,V18,V19,I.rpc,I.goose,I.release
+T9|x|Suppress Windows helper consoles; expose storage-sharing evidence to MCP; signed Windows release|V8,V10,V18,V19,I.rpc,I.goose,I.release
 T10|x|Model-visible clone/register with shared Git objects in redb; preserve other administration boundaries|V4,V8,V18,V20,I.rpc,I.goose
 
 T11|x|redb Git object backend, migration, library Git operations|V1,V3,V6,V11,V19,V20,V21,I.storage
