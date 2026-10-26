@@ -1,0 +1,47 @@
+[package]
+name = "vwork"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+description = "Compressed virtual workspaces and MCP tools for coding agents"
+license = "MIT"
+repository = "https://github.com/allquixotic/vwork"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
+dirs = "6"
+fs2 = "0.4"
+globset = "0.4"
+im = { version = "15", features = ["serde"] }
+redb = "4.4"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+similar = "2"
+tiny_http = "0.12"
+toml = "0.9"
+ureq = { version = "3", default-features = false, features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+wait-timeout = "0.2"
+walkdir = "2"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+zstd = "0.13"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
+

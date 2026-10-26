@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vwork": {
+      "command": "C:/Users/YOU/Tools/vwork/bin/vwork.exe",
+      "args": ["--home", "C:/Users/YOU/AppData/Local/vwork", "mcp", "--workspace", "task-one"]
+    }
+  }
+}

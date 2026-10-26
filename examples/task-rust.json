@@ -1,0 +1,9 @@
+{
+  "repo": "mono",
+  "name": "test",
+  "program": "cargo",
+  "args": ["test", "--locked"],
+  "cwd": "",
+  "timeout_seconds": 600,
+  "env": {}
+}

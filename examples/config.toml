@@ -1,0 +1,8 @@
+compression_level = 3
+port = 0
+max_file_bytes = 67108864
+max_results = 1000
+max_output_bytes = 1048576
+max_cached_bases = 4
+max_run_history = 20
+task_timeout_seconds = 600
