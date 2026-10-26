@@ -13,30 +13,31 @@
    publication and durable state, but it does not magically supply application
    branches. The revision/overlay layer supplies those.
 
-Base content stays in an existing Git object database. Each imported commit's
-path/mode/size/object metadata is stored once per **repository ID and commit** in
-redb. Creating another workspace at that commit adds a workspace record and an
-empty revision, reusing the existing manifest. A fork only adds a workspace record
-pointing at the existing revision. Separate repository registrations have separate
-manifests even if they use the same Git directory or remote URL. Separately cloned
-Git object stores remain separate on disk; vwork does not deduplicate them by URL.
-Identical edited content still shares one compressed blob throughout the daemon.
-`git cat-file --batch`
-streams base bytes when a read/search/build needs them. Nothing checks out a
-second tree for a virtual fork. A cached persistent `im::OrdMap` shares in-memory
-path nodes across reconstructed snapshots.
+All persistent Git objects, refs and source content live in redb. `git2`/libgit2
+reads and writes through a custom redb object backend; normal reads, history,
+trees and commits launch no Git CLI processes. Typed raw Git objects are hashed
+by libgit2, zstd-compressed and shared daemon-wide by Git object ID. Reads verify
+both size and hash. Repository membership records identify objects needed for a
+temporary native Git view. SHA-1 repositories are supported; unsupported object
+formats fail explicitly rather than silently converting IDs.
 
-Each edit stores a compressed whole file. Incompressible data may become slightly
-larger; repeatedly editing a huge binary is a poor fit. Base Git objects already
-use Git's own compression. Compression level 3 is a speed/size starting point,
-not a measured optimum for every monorepo.
+Registration imports every available object and resolved ref, including history
+and tags, without changing the original checkout/index/refs. It captures committed
+state, not dirty or ignored checkout files. Clone uses libgit2 and stores its
+result in redb. Remote transport uses a journaled temporary pack directory; success,
+failure and restart cleanup remove it. Transfer progress has a deadline/8 GiB pack
+limit and sockets have connect/read timeouts. Noninteractive HTTPS authentication
+can use the installed Git credential helper; SSH uses the agent. No credentials
+are persisted in repository records. Existing registrations migrate before use;
+missing original stores produce a restoration instruction without deleting data.
 
-`vwork_storage_info` exposes read-only daemon counters, sharing scopes and byte
-accounting to MCP. The CLI `stats` and `storage_info` operations return the same
-information. Base-manifest/workspace/revision bytes count serialized keys and
-values, not redb's physical page allocation. Counts include retained and
-uncollected records. Database file size includes page overhead and reusable free
-space; Git objects, builds, exports and caches live outside that file.
+Base manifests are stored once per repository ID and commit. New workspaces reuse
+them; forks share an immutable revision. Different registrations may have separate
+manifests while sharing identical Git objects. Edited file blobs share by BLAKE3.
+A cached persistent `im::OrdMap` shares in-memory path nodes across snapshots.
+`storage_info` reports these scopes and counters without creating probe workspaces.
+Serialized record bytes are logical sizes; redb file size includes overhead and
+reusable pages. Temporary copies and deliberate durable exports are outside redb.
 
 ## One owner, many clients
 
@@ -80,50 +81,48 @@ The Windows state directory inherits its parent ACL; use your private profile.
   daemon.lock          # exclusive owner lock; existence alone does not mean locked
   connection.json      # current loopback URL/token/PID; do not publish
   daemon.log           # background owner diagnostics
-  build/<repo>/        # single reusable physical source tree, created on demand
-  build-git/<repo>/    # private Git admin/index; alternates borrow source objects
-  targets/<repo>/<project>/       # Cargo build outputs
-  environments/<repo>/<project>/  # copied Python virtual environment
-  artifacts/<repo>/<project>/     # built Python wheels
+  temporary/<lease>/
+    owner                        # ownership marker; journal also in redb
+    tree/                        # temporary source copy, .git pointer
+    git/                         # disposable exported Git objects/index/refs
+    targets/, environments/      # package outputs and environments
+    artifacts/, uv-cache/        # results and uv cache, removed with lease
+  transfers/<id>/                # temporary libgit2 transfer staging only
 ```
 
-The version-1 schema is a string-keyed table `records_v1`:
+Schema 2 retains `records_v1` for repository metadata, refs, immutable revisions,
+workspaces, manifests, changed blobs, tasks, package fingerprints, export pins,
+lease journals and recovery history. `git_objects_v1` holds compressed typed Git
+objects; `git_members_v1` maps repositories to shared object IDs. Original source
+paths are provenance and export-overlap protection, not storage dependencies.
+The old binary rejects schema 2. Back up stopped state before upgrading. After
+migration, the redb database contains the source/history needed for restoration;
+also keep config and any deliberately retained physical artifacts.
 
-| Prefix | Records |
-|---|---|
-| `r/` | Registered repositories and existing Git directories |
-| `m/`, `t/` | Imported base markers and per-path Git entries |
-| `w/` | Workspace heads |
-| `v/` | Immutable revisions and path overlays |
-| `b/` | BLAKE3-keyed zstd blobs |
-| `task/`, `run/` | Human-configured tasks and bounded retained results |
-| `project/`, `package-state/` | Package projects and successful dependency-input fingerprints |
-| `export/` | Pins for snapshots exported as Git commits |
+Native tools cannot read redb directly. An explicit temporary request or configured
+build exports a leased copy with private Git objects, HEAD/index and refs. No
+alternates point outside the lease. Builds reuse a lease per repository and pin
+its revision. Package targets/environments/artifacts are under that lease, so
+release removes the heavy state together. Global Cargo/npm/pip caches remain
+owned by those tools; custom human-configured output locations remain explicit.
 
-Git base pins live under `refs/vwork/bases/<repo>/<commit>` in the original Git
-database, preventing normal Git GC from discarding required objects. Exported
-commits live under `refs/vwork/commits/<workspace>/<revision>`. vwork does not change
-the original branch, index or files, but these refs and exported Git objects are
-intentional writes to its Git database.
+Leases default to 30 minutes, at most four copies, with renewals capped at 24 hours.
+The model should explicitly release as soon as a tool finishes. A five-second
+background sweep and startup recovery remove expired copies; a per-repository
+lock protects active vwork jobs. Records precede filesystem creation and survive
+cleanup failures for retry. Ownership markers and safe-ancestor checks prevent
+following links or deleting arbitrary paths. Locked files/ownership failures stay
+visible in `temporary_list` and still count against allocation limits. When the
+daemon is stopped, cleanup resumes at its next start; there is no external service.
 
-Do not remove/move the original repo while workspaces depend on it. Restoring only
-the redb file is insufficient; base Git objects are dependencies. Back up the
-stopped state directory **and** every registered Git repository/object store.
-Registered repo relocation and schema migration are not implemented.
-
-The build view has a regular `.git` pointer to its own admin directory. Its index
-holds the virtual snapshot; detached HEAD holds the base commit. An alternates
-file borrows source objects, while changed overlay blobs are written only to the
-private Git store. Ref names/OIDs are refreshed for native version discovery.
-This costs one index and cached overlay Git objects per repository, not a full
-clone of its history. The Git view and physical build tree are disposable and
-reconstructed before each task. See [Git build semantics](builds.md#git-version-discovery-without-a-clone).
-
-Package actions share that repo's lock and source tree. Their dependency-input
-fingerprints are durable redb records; node_modules, target files and Python
-environments are ordinary disk files outside redb. Package actions never publish
-source edits implicitly. [The package guide](packages.md) describes reuse,
-invalidation and explicit import. No automatic cache quota or eviction is provided.
+Before cleanup or reuse, changed tracked files and nonignored source additions
+are saved into a separate `recovery-*` workspace. Original virtual workspaces are
+unchanged. Generated dependency/cache directories are excluded. Recovery is capped
+by per-file, result-count and 128 MiB total limits; exceeding a cap preserves the
+copy and reports an error for explicit import or intentional discard. This is a
+count/TTL bound, not a strict byte quota on running third-party tools. Artifacts
+must be saved before release. Legacy build trees with valid vwork ownership
+markers are adopted and reclaimed, preserving source edits the same way.
 
 ## Resource limits
 
@@ -145,7 +144,7 @@ invalidation and explicit import. No automatic cache quota or eviction is provid
 - At most 32 simultaneous request workers are accepted. Expensive searches may
   compete for CPU/disk; this release does not implement search cancellation.
 
-Search is a scan over the selected virtual snapshot, with a reusable Git batch
+Search is a scan over the selected virtual snapshot, with a reusable redb-backed object
 reader within the request. It skips binary/non-UTF-8/oversized files and respects
 edits and tombstones. There is no persistent full-text index yet. Narrow with
 globs and paginate. `workspace_size` sums logical file sizes from metadata and
@@ -168,7 +167,7 @@ needs no content reads; it is not an NTFS allocation scanner.
 - Virtual revisions are not Git commits. Commit export makes one commit whose
   parent is the workspace's original base. Repeated exports remain independent
   snapshots against that base. See the apply workflow before cherry-picking.
-- No Git fetch/push, credential handling, rebase, blame, interactive staging,
+- No refresh/fetch/push, rebase, blame, interactive staging,
   filesystem mounting or general file-manager GUI is included.
 - The MCP binding is a default workspace, not tenant isolation. The hook is a
   convenience policy. Build processes have your normal user permissions.

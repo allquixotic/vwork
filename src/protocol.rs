@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub const INSTRUCTIONS: &str = "You are working in a vwork virtual workspace. Use vwork_files_read/list/glob/search and vwork_workspace_info/status/diff/history instead of shell, grep, rg, find, cat, or native Git. Virtual changes are not files in the original checkout. Before editing, obtain the current revision; pass it as expected_revision. On revision conflict, reread and reconcile, never blindly retry. vwork_files_apply_patch takes an atomic array of full-file replacements or deletions, not a unified diff. Use vwork_package_list/run for configured npm/Cargo/pip actions and vwork_workspace_run_task for other configured builds/tests. Both share one build checkout per repo; report the exact tested revision and exit status. Native Git there has a private index and borrowed objects: HEAD is the base commit, virtual edits appear staged and dirty. Import needed source_changes with explicit paths and returned revision before any subsequent build can overwrite them; never import dependency trees, environments or build caches. Use vwork_workspace_export only when the user needs physical files. Never claim a build passed unless its tool result says success. Use vwork_storage_info for storage-sharing questions; do not create/drop probe workspaces just to measure sharing. Base manifests are shared per repository ID and commit; edited blobs deduplicate across this daemon. A common remote URL does not deduplicate separate repository registrations. Forks share immutable history. Merge reports conflicts without partial changes. Tasks, package projects and global maintenance are configured outside model tools by the human CLI.";
+pub const INSTRUCTIONS: &str = "Work virtually in vwork. Use repo_list and reuse registrations. For user-requested setup, repo_register imports committed state from an absolute repository path; repo_clone imports a selected URL into redb. All persistent Git objects, refs and source contents are in redb; no permanent source checkout. Use files_read/list/glob/search and workspace_info/status/diff/history instead of native filesystem or shell. Get the current revision before editing and pass expected_revision; reconcile conflicts. files_apply_patch accepts full-file replacements/deletions. Use package_list/run for configured npm/Cargo/pip/uv/CDK actions and workspace_run_task for other configured tools. External tools need files: package/task runs automatically use a tracked temporary copy and return its lease, expiry, exact revision, exit status and source_changes. Only request workspace_temporary when a specific filesystem-only tool cannot do its work virtually; explain why in purpose. Import wanted edits explicitly, then call temporary_release as soon as finished. Do not retain copies just in case. Use temporary_list to find forgotten copies and cleanup errors. Renew a lease before expiry if a tool still needs it. Expiry/startup cleanup saves bounded nonignored source changes into a separate recovery workspace and deletes the copy; dependencies, environments and build outputs are disposable. Save wanted artifacts before releasing. Never use discard_changes unless intentionally discarding those edits. Cleanup failures stay visible and block unlimited accumulation. Use workspace_export only for durable files the user explicitly wants to keep. Never claim success unless the tool reports success. Use storage_info for shared storage accounting; never create probe workspaces to measure sharing. Git objects deduplicate daemon-wide by object ID; edited blobs deduplicate by content hash. Base manifests share within a registration and commit. Forks share immutable history. Tasks, package configurations and global maintenance remain human CLI operations. CDK supports local synth/list actions, not deployments.";
 
 pub fn tools(bound: bool) -> Vec<Value> {
     let mut out = Vec::new();
@@ -21,7 +21,7 @@ pub fn tools(bound: bool) -> Vec<Value> {
                 required.push(name);
             }
         }
-        out.push(json!({"name":format!("vwork_{op}"),"description":desc,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read,"destructiveHint":!read,"idempotentHint":read,"openWorldHint":false}}));
+        out.push(json!({"name":format!("vwork_{op}"),"description":desc,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read,"destructiveHint":!read,"idempotentHint":read,"openWorldHint":op == "repo_clone"}}));
     };
     let w = ("workspace", "string", true);
     let e = ("expected_revision", "string", true);
@@ -36,9 +36,21 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "repo_list",
-        "List registered Git repositories. Registration is performed by the human CLI.",
+        "List registered Git repositories. Reuse an existing registration for additional workspaces before cloning another copy.",
         vec![],
         true,
+    );
+    add(
+        "repo_register",
+        "Import all Git objects, refs and committed source from an absolute existing repository path into redb under a new ID. Original checkout/index/refs are preserved; later source changes require a new import. Reuse this registration across virtual workspaces.",
+        vec![("repo", "string", true), ("path", "string", true)],
+        false,
+    );
+    add(
+        "repo_clone",
+        "Clone a user-selected Git source into redb under a new repository ID. All persistent objects and refs stay in redb; temporary transfer packs are cleaned after import/restart. Accepts HTTPS/SSH/Git/file URLs, SSH host:path or an absolute local repository path. No URL passwords/query tokens or arbitrary Git arguments. Then create virtual workspaces from HEAD or registered branch names.",
+        vec![("repo", "string", true), ("source", "string", true)],
+        false,
     );
     add(
         "repo_log",
@@ -204,8 +216,40 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "workspace_commit",
-        "Export exact virtual snapshot as a real Git commit under refs/vwork/commits. Does not change original branch/index or push.",
+        "Store exact virtual snapshot in redb as a real Git commit under refs/vwork/commits. Does not change original branch/index or push.",
         vec![w, e, ("message", "string", true)],
+        false,
+    );
+    add(
+        "workspace_temporary",
+        "Create a tracked temporary filesystem copy only for a tool that requires physical files. Give the reason; use virtual tools otherwise. Returns lease ID/path/expiry. Import wanted edits, save wanted artifacts, then release immediately after use. Expiry automatically reclaims it with bounded source recovery.",
+        vec![
+            w,
+            e,
+            ("purpose", "string", true),
+            ("ttl_seconds", "integer", false),
+        ],
+        false,
+    );
+    add(
+        "temporary_list",
+        "Inspect active copies, expiry, cleanup failures and recent recovery workspaces. Use this to release forgotten copies.",
+        vec![],
+        true,
+    );
+    add(
+        "temporary_renew",
+        "Extend an existing ready copy while a filesystem tool still needs it. Maximum TTL is configured by the human; release promptly afterward.",
+        vec![("lease", "string", true), ("ttl_seconds", "integer", false)],
+        false,
+    );
+    add(
+        "temporary_release",
+        "Remove an owned temporary copy and all its dependencies/artifacts. Default saves unimported source edits in a separate recovery workspace. Import desired changes first. discard_changes=true intentionally discards remaining edits. Active vwork jobs prevent removal.",
+        vec![
+            ("lease", "string", true),
+            ("discard_changes", "boolean", false),
+        ],
         false,
     );
     add(
@@ -226,7 +270,7 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "package_list",
-        "List human-configured npm, Cargo and pip projects and their allowed actions.",
+        "List human-configured npm, Cargo, pip, uv and CDK projects and their allowed actions.",
         vec![("repo", "string", true)],
         true,
     );

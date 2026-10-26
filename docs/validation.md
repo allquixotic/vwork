@@ -1,5 +1,26 @@
 # Validation record
 
+## 0.2.3 — Windows helpers and storage visibility
+
+Verified 2026-10-26:
+
+- [Source CI 40413998004](https://github.com/allquixotic/vwork/actions/runs/40413998004)
+  passed formatting, strict Clippy and all integration tests: **33 on Windows**,
+  **32 on macOS**, for `23ad9626b8306205c26bd37bb034d0098b4d9cd8`.
+- On the `games` Windows VM, the new helper/task tests first failed because
+  `GetConsoleWindow` returned a console handle. After the fix both passed,
+  including redirected stdin/stdout/stderr and a deliberate nonzero exit code.
+  All production Git/task/package command constructors use the tested helper.
+- The new storage test first failed because MCP lacked `vwork_storage_info`.
+  It now verifies read-only inspection, shared base manifests for another
+  workspace at the same registered commit, forked revision sharing, and identical
+  edited blobs across workspaces and repository registrations. A separate
+  registration of the same Git path deliberately has a separate base manifest.
+- Local formatting and strict Clippy for macOS and Windows targets passed. No
+  tests or GUI applications ran on Sean's Mac. Corporate AVD policy was not
+  reproduced. An old unfiltered Goose hook still requires its configuration
+  upgrade; vwork does not change the external host's process-launch behavior.
+
 ## 0.2.2 — automatic MCP startup
 
 Verified 2026-10-26:
@@ -34,8 +55,9 @@ Verified 2026-10-26:
   `cef11c66ea04177c675dcc47dfcaa92444ba2aa497ce942f67ea5067bd5675b0`.
   Signed executable SHA-256:
   `16054f166b9c146635a951ce2411082e9a1b2035159af9b94cd88d1f0afcd2c1`.
-- This release is available from GitHub. The manual S3 publishing skill was not
-  invoked for this change, so the existing S3 mirror was not updated.
+- A subsequent explicit `ship-to-aws` invocation uploaded this exact ZIP to the
+  stable S3 key with REDUCED_REDUNDANCY. Anonymous HEAD and full-download hash
+  verification passed; anonymous bucket listing returned 403.
 
 ## 0.2.1 — signed stable release
 
@@ -188,3 +210,17 @@ HTTPS download passed size/hash verification; anonymous bucket listing was denie
 The final local cleanup probe dropped 100 synthetic workspace references in
 0.884 seconds. As with the creation measurements, this is one small local test,
 not a guarantee for another filesystem or workload.
+
+## 0.3.0 implementation validation (in progress)
+
+- Baseline Windows `v21_redb_owns_git` failed after source removal; replacement
+  redb object backend passes reads, history, commits and reopen without source.
+- Baseline temporary-copy tests failed with unknown operation. Windows regressions
+  now pass create/renew/release, ownership protection, expiry recovery, quota and
+  active-job protection, legacy registration migration and old-build reclamation.
+- Baseline uv/CDK plan test rejected uv as unknown manager; new structured plans
+  pass, including refusal to expose CDK deployment actions.
+- Strict local formatting/Clippy and cross-compilation pass. No tests or GUI ran
+  on Sean's Mac. Native tests ran on games. The source-package test requires its
+  source tree and full tool fixtures are enabled in CI, not the copied test EXE.
+- CI and signed release verification will be recorded after their completion.

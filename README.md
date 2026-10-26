@@ -5,17 +5,15 @@ constrained Windows desktops. One native Rust executable supplies a shared redb
 store, CLI, stdio MCP server, Goose configuration generator and policy hook.
 
 A workspace is a reference to an immutable revision, not another directory full
-of source files. Existing Git objects supply base content. Edits are deduplicated
+of source files. Git objects, refs and base contents live inside redb, shared by object ID. Edits are deduplicated
 by BLAKE3 and stored as zstd blobs (level **3**, configurable). Forks share history.
-Builds use **one serialized physical source tree per registered repository**.
+Filesystem tools use **tracked temporary copies**, serialized per repository, with explicit release and automatic expiry cleanup.
 
 **This is an initial implementation, not a filesystem driver.** Native editors,
 compilers and shell commands cannot see a virtual workspace until you export it.
 Agent file operations use MCP. vwork needs no administrator rights, symlinks,
-mount drivers, Docker, Node or Python runtime. An existing Git installation is
-required. Optional package actions use your installed npm, Cargo or Python/pip.
-All supplied executables are Rust; zstd's native library is linked into
-the executable. Workstation execution policy must permit your binary to run.
+mount drivers, Docker, Node or Python runtime. Git operations use git2/libgit2 in process. Git is needed only by native Git-aware builds, the doctor check, or configured credential helpers. Optional package actions use installed npm, Cargo, Python/pip, uv or AWS CDK.
+The executable links native zstd and libgit2 libraries. Workstation execution policy must permit your binary to run.
 
 ## Get it
 
@@ -38,7 +36,7 @@ cargo build --locked --release
 ```
 
 Building requires a Rust toolchain and a native C toolchain for the statically
-linked zstd library. Windows source builds normally use the MSVC toolchain and
+linked zstd/libgit2 libraries (and their transport dependencies). Windows source builds normally use the MSVC toolchain and
 its C/C++ build tools. The prebuilt ZIP avoids installing build tools on an AVD. Windows builds use a
 statically linked MSVC C runtime to avoid requiring a separate redistributable.
 
@@ -71,6 +69,14 @@ Register more repositories with distinct `repo` IDs, and create/fork more
 workspaces with globally unique workspace IDs. A workspace captures a **committed
 Git tree**; uncommitted/ignored files from your original checkout are not imported.
 
+Agents can also call `vwork_repo_clone` with a selected Git URL or
+`vwork_repo_register` with an existing absolute repository path. Registration
+imports objects and refs into redb; subsequent reads do not depend on that path.
+Identical Git objects from separate registrations share storage by object ID.
+Existing registrations migrate on first 0.3 startup, so keep their original Git
+stores available until migration succeeds. Back up stopped state before upgrading;
+older binaries cannot open schema 2. Original user checkouts are never deleted.
+
 Follow [Goose setup](docs/goose.md) to merge the generated configuration, disable
 native source tools, install the optional hook and start a session. **No Goose
 source patch is required.** Give each independent agent its own workspace binding.
@@ -87,11 +93,12 @@ vwork mcp --workspace task-one       vwork CLI / other MCP bridges
                    vwork serve
              single owner of one redb file
                /                    \
-       Git base objects        compressed changed blobs
+       Git objects/refs        compressed changed blobs
+              (both inside the same redb file)
                        |
            explicit export or configured task
                        |
-           one build tree per repository
+           leased temporary files + automatic cleanup
 ```
 
 `vwork start` launches the owner in the background. Since 0.2.2, `vwork mcp`
@@ -112,10 +119,9 @@ partially changing the workspace.
   branch, index or working files.
 - Explicit full/filtered exports and import of explicitly selected physical edits.
 - Human-defined build/test tasks with timeouts, bounded output and per-repo locks.
-- A private Git index/HEAD for that build tree, borrowing existing Git objects.
-  `git describe`, `git rev-parse` and Git-aware build scripts work without cloning
-  the repository's object database. Virtual edits appear staged and dirty.
-- Configured npm, Cargo and pip projects with install/build/test actions, reusable
+- A disposable Git index/HEAD/object view exported from redb for Git-aware builds.
+  `git describe` and `git rev-parse` work; virtual edits appear staged and dirty.
+- Configured npm, Cargo, pip, uv and CDK projects with install/build/test actions, reusable
   caches, dependency-input checks and explicit lockfile/source writeback.
 - Logical directory-size reports, read-only MCP shared-storage counters, global storage stats, GC, history squash and
   offline redb compaction.
@@ -125,7 +131,7 @@ partially changing the workspace.
 See [all operations and examples](docs/operations.md),
 [storage and concurrency](docs/architecture.md),
 [builds and physical exports](docs/builds.md), and
-[npm, Cargo and pip setup](docs/packages.md). Also see
+[package tool setup](docs/packages.md). Also see
 [limits, recovery and disk maintenance](docs/operations.md#maintenance).
 
 ## Configuration
@@ -142,6 +148,10 @@ max_output_bytes = 1048576      # per task stream; text/diff budget
 max_cached_bases = 4            # in-memory path indexes
 max_run_history = 20            # bounded results retained in redb; 0 disables retention
 task_timeout_seconds = 600
+temporary_ttl_seconds = 1800    # 30 minutes, renewed after each build
+temporary_max_ttl_seconds = 86400
+max_temporary_copies = 4
+max_recovery_bytes = 134217728  # source edits preserved before cleanup
 ```
 
 Compression levels -7 through 22 are accepted. Changes affect new blob writes;

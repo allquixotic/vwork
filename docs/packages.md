@@ -1,10 +1,10 @@
-# npm, Cargo and pip
+# npm, Cargo, pip, uv and CDK
 
 vwork provides native Rust orchestration for installed package tools. Package
 managers and compilers still need physical source, dependency caches and build
-outputs. These actions use the **one shared build checkout per repo**, not a
+outputs. These actions use the **one reusable leased copy per repo**, not a
 checkout/environment per virtual workspace. They take the same lock as custom
-tasks and prepare its borrowed-object Git view, so Git-aware build scripts work.
+tasks and prepare its Git view from redb, so Git-aware build scripts work.
 
 The human registers named projects once. An agent gets `vwork_package_list` and
 `vwork_package_run`; it cannot choose a new executable, arbitrary arguments or
@@ -43,12 +43,12 @@ is stored in redb and immediately available; no daemon restart is needed.
 
 | Field | Meaning |
 |---|---|
-| `repo`, `name`, `manager` | Required IDs and `npm`, `cargo`, or `pip` |
+| `repo`, `name`, `manager` | Required IDs and `npm`, `cargo`, `pip`, `uv`, or `cdk` |
 | `path` | Relative project root; defaults to repo root |
-| `program` | Optional executable name/absolute path; defaults to `npm.cmd` on Windows / `npm` elsewhere, `cargo`, or `python` on Windows / `python3` elsewhere |
+| `program` | Optional executable name/absolute path; defaults to `npm.cmd` on Windows / `npm` elsewhere, `cargo`, `python` on Windows / `python3` elsewhere, `uv`, or `cdk.cmd` on Windows / `cdk` elsewhere |
 | `args` | Arguments before generated arguments, e.g. `["+stable"]` for Cargo or `["-3.12"]` for the Windows `py` launcher |
 | `env` | Extra environment variables; do not store secrets here |
-| `offline` | Default false. Sets npm offline / Cargo `--offline` / pip `PIP_NO_INDEX` |
+| `offline` | Default false. Sets npm offline / Cargo `--offline` / pip `PIP_NO_INDEX` / uv `UV_OFFLINE` |
 | `requirements` | Optional pip requirements file relative to project root |
 | `inputs` | Extra dependency-input paths relative to project root |
 | `scripts` | npm script names available as actions; default `build`, `test`, `lint` |
@@ -58,7 +58,7 @@ portable-path rules. Executables are resolved in the daemon's inherited PATH;
 restart it after changing PATH, or set `program` explicitly. A configured Python
 must support `venv --copies` and provide pip through ensurepip. Some standalone
 macOS Python distributions have copied-executable library-path problems; select
-a working installed Python with `program`. vwork does not download a runtime.
+a working installed Python with `program`. vwork itself does not download a runtime. uv can provision Python under its lease; set `UV_PYTHON_DOWNLOADS=never` in project env to require an installed interpreter.
 
 ## Agent workflow
 
@@ -79,6 +79,9 @@ including Python environment creation, and stream capture is bounded.
 | Cargo | `install`, `build`, `check`, `test`, `clippy`, `format_check`, `update`, `clean` | `install` means `cargo fetch --locked`, not global binary installation. Build/check/test/clippy use `--locked`; `format_check` runs `cargo fmt --all -- --check`; `update` may change Cargo.lock. `clean` removes this project's managed target directory. |
 | pip | `install`, `check`, `test`, `build`, `freeze`, `clean` | `install` prepares a copied venv and installs configured requirements, `requirements.txt`, or editable `.` from pyproject/setup.py. Other actions run `pip check`, `pytest`, `pip wheel --no-deps`, or `pip freeze` inside that venv. `clean` removes it. |
 
+| uv | `install`, `lock`, `check`, `test`, `build`, `clean` | `install` runs `uv sync` (`--locked` when uv.lock exists). `lock` runs `uv lock`; import changes explicitly. `check` uses `uv pip check` against the lease environment; `test` runs `uv run --no-sync --locked pytest` after install. `build` sends distributions to lease artifacts. Environment, cache and managed Python live under the lease. |
+| CDK | `build`, `synth`, `list`, `clean` | `build` aliases synth. Uses `--no-lookups --no-notices --ci` and a lease artifact output directory. Missing context must be provided explicitly. No deploy, destroy, bootstrap, watch or asset-publishing action is exposed. Installed CDK and the app runtime/dependencies are required. |
+
 Cargo projects need a committed/virtual lockfile for locked operations. To create
 one, use `update` and import the result. npm scripts must exist in package.json.
 Python `test` needs pytest installed by your requirements; wheel builds need the
@@ -97,19 +100,19 @@ lockfile and use configured root scripts to target individual packages.
   cache/config. Multiple projects in a repo should have distinct roots or be one
   npm workspace project.
 - Cargo inherits Cargo home/registry/Git caches and sets `CARGO_TARGET_DIR` to
-  `<home>/targets/<repo>/<project>`, outside the source checkout.
+  `<lease>/targets/<repo>/<project>`, outside the source checkout.
 - pip inherits pip's cache/config. It creates a reusable environment at
-  `<home>/environments/<repo>/<project>` using `venv --copies`, sets VIRTUAL_ENV
+  `<lease>/environments/<repo>/<project>` using `venv --copies`, sets VIRTUAL_ENV
   and prepends its executable directory to PATH. Wheels go to
-  `<home>/artifacts/<repo>/<project>`.
+  `<lease>/artifacts/<repo>/<project>`.
 
-npm scripts and pip check/test/build/freeze require a successful install matching
+npm scripts, uv check/test and pip check/test/build/freeze require a successful install matching
 the current dependency inputs. vwork fingerprints project configuration,
 manifests, lockfiles, requirements, selected nested manifests and extra `inputs`.
 Changing them invalidates prepared state. A pip reinstall for different inputs
 recreates the environment so obsolete packages cannot silently survive. An npm
 locked install uses `ci` to replace dependencies. A failed install invalidates
-the previous success record. These records are shared per project, so switching
+the previous success record. These records are scoped to lease and project, so switching
 between workspaces with different inputs may require reinstalling.
 
 Custom includes outside those defaults, local path dependencies in other project
@@ -151,3 +154,23 @@ conversation. Another agent can reuse the checkout between calls. Coordinate
 physical-edit import promptly; if the marker or revision changed, preserve/review
 the output and reconcile through virtual edits. A failed revision check never
 silently imports into a different virtual snapshot.
+
+## Release physical state after use
+
+Results include `temporary.id`, path and expiry. Import wanted source/lock edits,
+save desired wheels or cloud assemblies, then call `temporary_release`. This removes
+the tree, private Git view, targets, environments, uv cache and artifacts together.
+Renew only while a tool still needs the copy. Expiry/startup cleanup supplies a
+fallback and preserves bounded nonignored source edits in a recovery workspace.
+Global npm/Cargo/pip caches remain tool-managed. Human-configured output paths
+outside the lease are not automatically removed.
+
+Configure additional managers with, for example:
+
+```json
+{"repo":"mono","name":"service","manager":"uv","path":"service"}
+{"repo":"mono","name":"infra","manager":"cdk","path":"infra"}
+```
+
+Sources: [uv locking/sync](https://docs.astral.sh/uv/concepts/projects/sync/),
+[CDK synthesis](https://docs.aws.amazon.com/cdk/v2/guide/ref-cli-cmd-synth.html).

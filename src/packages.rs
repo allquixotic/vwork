@@ -11,6 +11,8 @@ pub enum Manager {
     Npm,
     Cargo,
     Pip,
+    Uv,
+    Cdk,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +78,8 @@ impl Project {
                 "clean",
             ],
             Manager::Pip => vec!["install", "check", "test", "build", "freeze", "clean"],
+            Manager::Uv => vec!["install", "lock", "check", "test", "build", "clean"],
+            Manager::Cdk => vec!["build", "synth", "list", "clean"],
         };
         let mut actions: BTreeSet<String> = actions.into_iter().map(String::from).collect();
         if matches!(self.manager, Manager::Npm) {
@@ -99,6 +103,15 @@ impl Project {
                 ".npmrc",
             ],
             Manager::Cargo => &["Cargo.toml", "Cargo.lock", ".cargo/config.toml"],
+            Manager::Uv => &["pyproject.toml", "uv.lock", "uv.toml", ".python-version"],
+            Manager::Cdk => &[
+                "cdk.json",
+                "cdk.context.json",
+                "package.json",
+                "package-lock.json",
+                "pyproject.toml",
+                "uv.lock",
+            ],
             Manager::Pip => &[
                 "requirements.txt",
                 "pyproject.toml",
@@ -128,6 +141,8 @@ impl Project {
                     ["package.json", "package-lock.json", "npm-shrinkwrap.json"].contains(&name)
                 }
                 Manager::Cargo => name == "Cargo.toml",
+                Manager::Uv => ["pyproject.toml", "uv.lock", "uv.toml"].contains(&name),
+                Manager::Cdk => ["cdk.json", "cdk.context.json", "package.json"].contains(&name),
                 Manager::Pip => {
                     (name.starts_with("requirements") || name.starts_with("constraints"))
                         && (name.ends_with(".txt") || name.ends_with(".in"))
@@ -238,6 +253,14 @@ pub fn plan(
             }
         }
         Manager::Cargo => "cargo",
+        Manager::Uv => "uv",
+        Manager::Cdk => {
+            if cfg!(windows) {
+                "cdk.cmd"
+            } else {
+                "cdk"
+            }
+        }
         Manager::Pip => {
             if cfg!(windows) {
                 "python"
@@ -306,6 +329,81 @@ pub fn plan(
                     args.push("--offline".into());
                 }
             }
+            plan.steps.push(Step::Command { program, args });
+        }
+        Manager::Uv => {
+            let venv = environment(home, project);
+            plan.environment = Some(venv.clone());
+            plan.env
+                .insert("UV_PROJECT_ENVIRONMENT".into(), process_path(&venv));
+            plan.env
+                .insert("UV_CACHE_DIR".into(), process_path(&home.join("uv-cache")));
+            plan.env.insert(
+                "UV_PYTHON_INSTALL_DIR".into(),
+                process_path(&home.join("uv-python")),
+            );
+            plan.env.insert("UV_LINK_MODE".into(), "copy".into());
+            plan.env.insert("UV_NO_PROGRESS".into(), "true".into());
+            if project.offline {
+                plan.env.insert("UV_OFFLINE".into(), "true".into());
+            }
+            match action {
+                "clean" => {
+                    plan.steps.push(Step::Remove(venv));
+                    return Ok(plan);
+                }
+                "install" => {
+                    args.push("sync".into());
+                    if tree.contains_key(&project.virtual_path("uv.lock")) {
+                        args.push("--locked".into());
+                    }
+                }
+                "lock" => args.push("lock".into()),
+                "build" => args.extend([
+                    "build".into(),
+                    "--out-dir".into(),
+                    process_path(&plan.artifacts),
+                ]),
+                "check" | "test" => {
+                    ensure!(
+                        installed,
+                        "uv environment is not prepared for these inputs; run package install first"
+                    );
+                    if action == "check" {
+                        args.extend([
+                            "pip".into(),
+                            "check".into(),
+                            "--python".into(),
+                            process_path(&python_executable(&venv)),
+                        ]);
+                    } else {
+                        args.extend([
+                            "run".into(),
+                            "--no-sync".into(),
+                            "--locked".into(),
+                            "pytest".into(),
+                        ]);
+                    }
+                }
+                _ => unreachable!(),
+            }
+            plan.steps.push(Step::Command { program, args });
+        }
+        Manager::Cdk => {
+            if action == "clean" {
+                plan.steps.push(Step::Remove(plan.artifacts.clone()));
+                return Ok(plan);
+            }
+            args.extend([
+                if action == "build" { "synth" } else { action }.into(),
+                "--no-lookups".into(),
+                "--no-notices".into(),
+                "--ci".into(),
+                "--output".into(),
+                process_path(&plan.artifacts),
+            ]);
+            plan.env
+                .insert("CDK_DISABLE_VERSION_CHECK".into(), "1".into());
             plan.steps.push(Step::Command { program, args });
         }
         Manager::Pip => {

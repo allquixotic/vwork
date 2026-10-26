@@ -1,10 +1,15 @@
 # Changelog
 
-## 0.2.3
+## 0.3.0
 
-- Suppress console windows for captured Git, configured-task and package helpers on Windows while preserving pipes and exit status.
-- Add read-only MCP `vwork_storage_info` with manifest/blob counters, metadata sizes and explicit deduplication scopes.
-- Explain shared base manifests, per-workspace/revision records and the distinction between repository IDs and remote URLs; discourage disposable storage probes.
+- Store Git objects, refs and all committed source in redb using git2/libgit2; share identical objects daemon-wide and migrate old registrations without modifying original repositories.
+- Expose structured clone/register tools; no permanent cloned checkout or external Git object dependency.
+- Add temporary-copy create/list/renew/release, bounded leases, startup/periodic cleanup, active-job protection, source recovery and legacy build cleanup.
+- Put task/package copies, private Git views, environments and outputs under leases; return cleanup handles with results.
+- Add uv and local CDK package actions with explicit source writeback and scoped artifacts.
+- Suppress Windows helper consoles and expose read-only storage counters and sharing guidance.
+
+Tag v0.2.3 was retained without a published release; its pending CI release was cancelled when clone/register was added to this change.
 
 ## 0.2.2
 

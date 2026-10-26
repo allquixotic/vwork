@@ -13,6 +13,10 @@ pub struct Config {
     pub max_output_bytes: usize,
     pub max_cached_bases: usize,
     pub max_run_history: usize,
+    pub temporary_ttl_seconds: u64,
+    pub temporary_max_ttl_seconds: u64,
+    pub max_temporary_copies: usize,
+    pub max_recovery_bytes: u64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -25,6 +29,10 @@ impl Default for Config {
             max_output_bytes: 1024 * 1024,
             max_cached_bases: 4,
             max_run_history: 20,
+            temporary_ttl_seconds: 1800,
+            temporary_max_ttl_seconds: 86400,
+            max_temporary_copies: 4,
+            max_recovery_bytes: 128 * 1024 * 1024,
         }
     }
 }
@@ -39,7 +47,11 @@ impl Config {
                 && self.max_results > 0
                 && self.max_output_bytes > 0
                 && self.task_timeout_seconds > 0
-                && self.max_cached_bases > 0,
+                && self.max_cached_bases > 0
+                && self.temporary_ttl_seconds > 0
+                && self.temporary_ttl_seconds <= self.temporary_max_ttl_seconds
+                && self.max_temporary_copies > 0
+                && self.max_recovery_bytes > 0,
             "limits must be positive"
         );
         Ok(())
@@ -51,6 +63,14 @@ pub struct Repository {
     pub id: String,
     pub path: PathBuf,
     pub git_dir: PathBuf,
+    #[serde(default)]
+    pub stored: bool,
+    #[serde(default)]
+    pub refs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub author_name: String,
+    #[serde(default)]
+    pub author_email: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

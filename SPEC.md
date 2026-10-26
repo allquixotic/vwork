@@ -2,11 +2,11 @@
 Provide compressed, isolated, persistent virtual workspaces for Goose without admin rights, symlinks, or per-agent full checkouts.
 
 # §C
-- Native Rust executables; existing Git required for Git object plumbing and explicit remote operations.
+- Native Rust executables; git2/libgit2 handles Git objects, history, imports and clone transport. Git CLI only for explicitly configured tasks or credential helpers.
 - macOS and Windows supported. Publish binaries only for Windows x64, inside ZIP.
 - One authenticated loopback daemon owns one redb database. Multiple repositories, workspaces, and MCP clients.
-- Zstd level 3 default; configurable. Git-backed immutable base; compressed changed blobs.
-- One serialized managed build checkout per repository. Explicit export/import; never mutate original checkout.
+- Zstd level 3 default; configurable. All persistent Git objects, refs, base contents and changed blobs inside redb; globally deduplicated objects.
+- Serialized builds use bounded, expiring temporary copies. Explicit import/release; never mutate original checkout.
 - No transparent virtual filesystem claim. No arbitrary shell in MCP.
 
 # §I
@@ -28,7 +28,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V9: GC retains live/forked/exported revisions and blobs; database reopens. Tests `garbage_collection`, `squash_reclaims_old_blobs`, `export_retention`.
 - V10: ZIP contains only Windows x64 binary plus allowlisted source/docs; no local state/secrets. Test `package_contents`.
 
-- V11: Build Git shares existing objects, owns HEAD/index/refs, reports the base commit and virtual dirtiness, and preserves source Git state. Test `build_git_metadata`.
+- V11: Temporary build Git exports redb objects, owns HEAD/index/refs, reports the base commit and virtual dirtiness, and preserves source Git state. Test `build_git_metadata`.
 - V12: Package actions serialize with builds; npm dependencies and pip environments require matching inputs; Cargo targets are per project. Tests `package_workflows`, `package_input_changes`.
 - V13: Package-generated manifest/lock edits are reported for explicit import; virtual source never changes implicitly. Test `package_writeback`.
 - V14: Build source-change reports compare content against the virtual index; a rebuilt stat cache alone never marks files changed. Tests `build_git_metadata`, `package_workflows`.
@@ -37,6 +37,11 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V17: Generated Goose hook matcher ! cover every blocked tool family; vwork calls ! skip hook process; selected hook ! retain on_failure=block. Tests `v17_generated_hook_matcher`, `protocol_and_hooks`.
 - V18: Captured Git/task/package subprocesses on Windows ! no console allocation; preserve redirected IO and exit status. Tests `v18_windows_task_console`, `v18_process_stdio`.
 - V19: Read-only MCP storage info ! report shared manifests/blobs and per-workspace/revision records without probe mutations; same registered repo+commit ! reuse base manifest; identical edits ! reuse daemon blobs. Test `v19_storage_sharing`.
+- V20: MCP repository setup ! structured clone/register only; clones ! redb-owned objects/refs; bounded temporary transport staging; no persistent checkout; no overwrite; registration publication ! unique ID transaction; failures ! no registered partial clone. Tests `v20_repository_setup`, `v20_clone_failure_preserves_paths`, `v20_registration_is_atomic`.
+
+- V21: Register/clone import all Git objects/refs into redb via git2; reads/history/commits work after source removal; legacy registration migrates before use without modifying source. Test `v21_redb_owns_git`, `v21_legacy_migration`.
+- V22: Temporary copies ! journaled ownership, bounded count/TTL, explicit release/renew, startup and periodic expiry cleanup; active jobs protected; failed cleanup retained for retry; preserve tracked source edits as recovery snapshot before automatic removal. Tests `v22_temporary_lifecycle`, `v22_temporary_recovery`, `v22_cleanup_ownership`.
+- V23: uv/CDK ! structured configured package actions over temporary copies; report completion, revision, lease and changes; no implicit virtual writeback or CDK deployment. Test `v23_uv_cdk_plans`.
 
 # §T
 id|status|task|cites
@@ -51,6 +56,10 @@ T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
 T7|x|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
 T8|x|Automatic MCP daemon lifecycle, bounded concurrent startup, opt-out and hook matching; signed Windows CI release|V8,V10,V16,V17,I.rpc,I.goose,I.release
 T9|~|Suppress Windows helper consoles; expose storage-sharing evidence to MCP; signed Windows release|V8,V10,V18,V19,I.rpc,I.goose,I.release
+T10|~|Model-visible clone/register with shared Git objects in redb; preserve other administration boundaries|V4,V8,V18,V20,I.rpc,I.goose
+
+T11|~|redb Git object backend, migration, library Git operations|V1,V3,V6,V11,V19,V20,V21,I.storage
+T12|~|Recoverable leased temporary copies and uv/CDK package actions|V4,V7,V9,V12,V13,V22,V23,I.rpc,I.goose
 
 # §B
 id|date|cause|fix
@@ -71,3 +80,6 @@ B13|2026-10-26|Windows background spawn inherited unrelated MCP/CLI pipe handles
 B14|2026-10-26|Release signing setup failed downloading the pinned TrustedSigning 0.5.8 package from PowerShell Gallery before signing began|Package URL subsequently returned HTTP 200; retry unchanged tag/source with mandatory signing and verification intact; external download failure, no runtime invariant change
 B15|2026-10-26|Captured Git and task subprocesses used default Windows creation flags, allocating consoles from the detached daemon|V18; shared no-window command constructor with native Windows console/IO regression
 B16|2026-10-26|MCP lacked shared-storage counters and manifest-sharing contract, prompting speculative answers and disposable probe workspaces|V19; read-only storage_info plus explicit sharing scopes and counter-based regression
+B17|2026-10-26|Repository registration checked ID existence outside publication, so six simultaneous requests all succeeded and could replace each other's registration|V20; per-ID setup serialization plus uniqueness check inside publication transaction; native concurrent-registration regression
+
+B18|2026-10-26|Legacy build directories could survive a redb migration and retain heavy outputs; interrupted moves could leave stale Git pointers|V22; journal/adopt owned directories, resume from moved marker, reconstruct private Git view before source recovery and cleanup

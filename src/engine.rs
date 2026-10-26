@@ -1,11 +1,11 @@
 use crate::{
-    git,
+    git, git_store,
     model::*,
     packages::{self, Project, Step},
 };
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -20,14 +20,16 @@ enum BuildRequest {
     Package(Project, String),
 }
 
-const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records_v1");
+pub(crate) const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records_v1");
 
 pub struct Engine {
-    pub db: Database,
+    pub db: Arc<Database>,
     pub home: PathBuf,
     pub config: Config,
     build_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
-    lifecycle: RwLock<()>,
+    pub(crate) lifecycle: RwLock<()>,
+    pub(crate) temporary_lock: Mutex<()>,
+    transfer_lock: Mutex<()>,
     base_cache: Mutex<HashMap<String, Tree>>,
 }
 
@@ -62,28 +64,41 @@ impl Engine {
         {
             let mut table = txn.open_table(RECORDS)?;
             if let Some(v) = table.get("schema")? {
-                ensure!(v.value() == b"1", "unsupported database schema");
+                ensure!(
+                    [b"1".as_slice(), b"2".as_slice()].contains(&v.value()),
+                    "unsupported database schema"
+                );
             }
-            table.insert("schema", b"1".as_slice())?;
+            if table.get("schema")?.is_none() {
+                table.insert("schema", b"1".as_slice())?;
+            }
         }
         txn.commit()?;
-        Ok(Self {
-            db,
+        git_store::initialize(&db)?;
+        let engine = Self {
+            db: Arc::new(db),
             home,
             config,
             build_locks: Mutex::new(HashMap::new()),
             lifecycle: RwLock::new(()),
+            temporary_lock: Mutex::new(()),
+            transfer_lock: Mutex::new(()),
             base_cache: Mutex::new(HashMap::new()),
-        })
+        };
+        engine.cleanup_transfers()?;
+        engine.migrate_repositories()?;
+        engine.migrate_legacy_copies()?;
+        engine.reap_temporary()?;
+        Ok(engine)
     }
 
-    fn get<T: DeserializeOwned>(&self, k: &str) -> Result<T> {
+    pub(crate) fn get<T: DeserializeOwned>(&self, k: &str) -> Result<T> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(RECORDS)?;
         let bytes = t.get(k)?.with_context(|| format!("not found: {k}"))?;
         Ok(serde_json::from_slice(bytes.value())?)
     }
-    fn put<T: Serialize>(&self, k: &str, value: &T) -> Result<()> {
+    pub(crate) fn put<T: Serialize>(&self, k: &str, value: &T) -> Result<()> {
         let txn = self.db.begin_write()?;
         {
             txn.open_table(RECORDS)?
@@ -92,7 +107,7 @@ impl Engine {
         txn.commit()?;
         Ok(())
     }
-    fn scan(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    pub(crate) fn scan(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(RECORDS)?;
         let mut out = Vec::new();
@@ -123,17 +138,7 @@ impl Engine {
         if self.get::<bool>(&format!("m/{}/{commit}", repo.id)).is_ok() {
             return Ok(());
         }
-        let tree = git::tree(repo, commit)?;
-        // Pin every imported base against Git's object garbage collection.
-        git::run(
-            repo,
-            &[
-                "update-ref",
-                &format!("refs/vwork/bases/{}/{commit}", repo.id),
-                commit,
-            ],
-            None,
-        )?;
+        let tree = git::tree(&self.db, repo, commit)?;
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(RECORDS)?;
@@ -204,9 +209,9 @@ impl Engine {
         Ok((head, tree))
     }
 
-    fn bytes(
+    pub(crate) fn bytes(
         &self,
-        repo: &Repository,
+        _repo: &Repository,
         e: &Entry,
         reader: &mut Option<git::Reader>,
     ) -> Result<Vec<u8>> {
@@ -220,7 +225,7 @@ impl Engine {
         );
         if e.source == "git" {
             if reader.is_none() {
-                *reader = Some(git::Reader::new(repo)?);
+                *reader = Some(git::Reader::new(&self.db)?);
             }
             return reader
                 .as_mut()
@@ -314,7 +319,7 @@ impl Engine {
         Ok(updated)
     }
 
-    fn encoded(&self, content: Vec<u8>, mode: &str) -> Result<(Entry, Vec<u8>)> {
+    pub(crate) fn encoded(&self, content: Vec<u8>, mode: &str) -> Result<(Entry, Vec<u8>)> {
         ensure!(
             content.len() <= self.config.max_file_bytes,
             "file exceeds max_file_bytes"
@@ -362,49 +367,251 @@ impl Engine {
         self.call_inner(op, a)
     }
 
+    fn repository_id_available(&self, repo_id: &str) -> Result<()> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(RECORDS)?;
+        ensure!(
+            table.get(key("r", repo_id).as_str())?.is_none(),
+            "repository id already registered"
+        );
+        Ok(())
+    }
+
+    fn publish_repository(&self, repo: &Repository) -> Result<()> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(RECORDS)?;
+            let key = key("r", &repo.id);
+            ensure!(
+                table.get(key.as_str())?.is_none(),
+                "repository id already registered"
+            );
+            table.insert(key.as_str(), serde_json::to_vec(repo)?.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    fn migrate_repositories(&self) -> Result<()> {
+        for (key, bytes) in self.scan("r/")? {
+            let mut repo: Repository = serde_json::from_slice(&bytes)?;
+            if !repo.stored {
+                let source = git2::Repository::open(&repo.git_dir).with_context(|| {
+                    format!(
+                        "migration needs original repository at {}; restore it and retry",
+                        repo.git_dir.display()
+                    )
+                })?;
+                git::import(
+                    &self.db,
+                    &source,
+                    &mut repo,
+                    self.config.compression_level,
+                    self.config.task_timeout_seconds,
+                )?;
+                self.put(&key, &repo)?;
+            }
+        }
+        let tx = self.db.begin_write()?;
+        tx.open_table(RECORDS)?.insert("schema", b"2".as_slice())?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn inspect_repository(&self, repo_id: &str, path: &Path) -> Result<Repository> {
+        ensure!(
+            path.is_absolute(),
+            "registration requires an absolute repository path"
+        );
+        let source = git2::Repository::open(path)?;
+        let root = source.workdir().unwrap_or(source.path()).canonicalize()?;
+        ensure!(
+            !self.home.starts_with(&root) && !root.starts_with(&self.home),
+            "vwork home and registered repository must not overlap"
+        );
+        let mut repo = Repository {
+            id: repo_id.into(),
+            path: root,
+            git_dir: source.path().canonicalize()?,
+            stored: false,
+            refs: BTreeMap::new(),
+            author_name: String::new(),
+            author_email: String::new(),
+        };
+        git::import(
+            &self.db,
+            &source,
+            &mut repo,
+            self.config.compression_level,
+            self.config.task_timeout_seconds,
+        )?;
+        Ok(repo)
+    }
+
+    pub(crate) fn cleanup_transfers(&self) -> Result<()> {
+        let Ok(_transfer) = self.transfer_lock.try_lock() else {
+            return Ok(());
+        };
+        for (key, _) in self.scan("transfer/")? {
+            if let Err(error) = self.remove_transfer(&key[9..]) {
+                let mut record: Value = self.get(&key)?;
+                record["cleanup_error"] = json!(format!("{error:#}"));
+                self.put(&key, &record)?;
+            }
+        }
+        Ok(())
+    }
+    fn remove_transfer(&self, transfer: &str) -> Result<()> {
+        valid_id(transfer)?;
+        let path = self.home.join("transfers").join(transfer);
+        safe_ancestors(&path)?;
+        if path.exists() {
+            let marker = path.join("owner");
+            if marker.exists() {
+                ensure!(
+                    std::fs::read_to_string(&marker)? == transfer,
+                    "transfer ownership mismatch"
+                );
+            } else {
+                ensure!(
+                    std::fs::read_dir(&path)?.next().is_none(),
+                    "unmarked transfer contains files"
+                );
+            }
+            std::fs::remove_dir_all(&path)?;
+        }
+        let tx = self.db.begin_write()?;
+        tx.open_table(RECORDS)?
+            .remove(format!("transfer/{transfer}").as_str())?;
+        tx.commit()?;
+        Ok(())
+    }
+    fn clone_repository(&self, repo_id: &str, source: &str) -> Result<Value> {
+        let source = git::clone_source(source)?;
+        if Path::new(&source).is_absolute() {
+            let mut repo = self.inspect_repository(repo_id, Path::new(&source))?;
+            repo.path = PathBuf::new();
+            repo.git_dir = PathBuf::new();
+            self.publish_repository(&repo)?;
+            return Ok(
+                json!({"repo":repo.id,"stored":true,"storage":"redb","default_reference":"HEAD"}),
+            );
+        }
+        let _transfer = self
+            .transfer_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("transfer lock poisoned"))?;
+        ensure!(
+            self.scan("transfer/")?.len() < self.config.max_temporary_copies,
+            "pending transfer cleanup limit reached; inspect temporary_list"
+        );
+        let transfer = id();
+        let path = self.home.join("transfers").join(&transfer);
+        safe_ancestors(&path)?;
+        self.put(
+            &format!("transfer/{transfer}"),
+            &json!({"repo":repo_id,"created":now()}),
+        )?;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::create_dir(&path)?;
+        std::fs::write(path.join("owner"), &transfer)?;
+        let result = (|| -> Result<Value> {
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(self.config.task_timeout_seconds);
+            let mut callbacks = git2::RemoteCallbacks::new();
+            callbacks.transfer_progress(|p| {
+                std::time::Instant::now() < deadline && p.received_bytes() <= 8 * 1024 * 1024 * 1024
+            });
+            let mut credential_attempts = 0;
+            callbacks.credentials(|url, user, allowed| {
+                credential_attempts += 1;
+                if credential_attempts > 3 {
+                    return Err(git2::Error::from_str(
+                        "noninteractive authentication failed",
+                    ));
+                }
+                if allowed.contains(git2::CredentialType::USERNAME) {
+                    git2::Cred::username(user.unwrap_or("git"))
+                } else if allowed.contains(git2::CredentialType::SSH_KEY) {
+                    git2::Cred::ssh_key_from_agent(user.unwrap_or("git"))
+                } else if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+                    git_credentials(url, user).map_err(|_| {
+                        git2::Error::from_str("noninteractive Git credential helper failed")
+                    })
+                } else if allowed.contains(git2::CredentialType::DEFAULT) {
+                    git2::Cred::default()
+                } else {
+                    Err(git2::Error::from_str(
+                        "unsupported noninteractive authentication",
+                    ))
+                }
+            });
+            let mut fetch = git2::FetchOptions::new();
+            fetch.remote_callbacks(callbacks);
+            let source = git2::build::RepoBuilder::new()
+                .bare(true)
+                .fetch_options(fetch)
+                .clone(&source, &path.join("pack"))?;
+            let mut repo = Repository {
+                id: repo_id.into(),
+                path: PathBuf::new(),
+                git_dir: PathBuf::new(),
+                stored: false,
+                refs: BTreeMap::new(),
+                author_name: String::new(),
+                author_email: String::new(),
+            };
+            git::import(
+                &self.db,
+                &source,
+                &mut repo,
+                self.config.compression_level,
+                self.config.task_timeout_seconds,
+            )?;
+            self.publish_repository(&repo)?;
+            Ok(json!({"repo":repo.id,"stored":true,"storage":"redb","default_reference":"HEAD"}))
+        })();
+        let cleanup = self.remove_transfer(&transfer);
+        match (result, cleanup) {
+            (Ok(mut result), Err(error)) => {
+                result["cleanup_pending"] = json!(error.to_string());
+                Ok(result)
+            }
+            (Err(error), _) => Err(error),
+            (Ok(result), Ok(())) => Ok(result),
+        }
+    }
+
     fn call_inner(&self, op: &str, a: &Value) -> Result<Value> {
+        if [
+            "workspace_temporary",
+            "temporary_list",
+            "temporary_renew",
+            "temporary_release",
+        ]
+        .contains(&op)
+        {
+            return self.temporary_call(op, a);
+        }
         match op {
             "health" => {
                 return Ok(
-                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":1,"compression_level":self.config.compression_level}),
+                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":2,"compression_level":self.config.compression_level}),
                 );
             }
-            "repo_register" => {
+            "repo_register" | "repo_clone" => {
                 let repo_id = string(a, "repo")?;
                 valid_id(repo_id)?;
-                ensure!(
-                    self.repo(repo_id).is_err(),
-                    "repository id already registered"
-                );
-                let root = PathBuf::from(string(a, "path")?).canonicalize()?;
-                let out = crate::process::command("git")
-                    .arg("-C")
-                    .arg(git::path_argument(&root))
-                    .args(["rev-parse", "--show-toplevel"])
-                    .output()?;
-                ensure!(
-                    out.status.success(),
-                    "path must be an existing non-bare Git checkout"
-                );
-                let root = PathBuf::from(String::from_utf8(out.stdout)?.trim()).canonicalize()?;
-                ensure!(
-                    !self.home.starts_with(&root) && !root.starts_with(&self.home),
-                    "vwork home and registered checkout must not overlap"
-                );
-                let out = crate::process::command("git")
-                    .arg("-C")
-                    .arg(git::path_argument(&root))
-                    .args(["rev-parse", "--absolute-git-dir"])
-                    .output()?;
-                ensure!(out.status.success(), "cannot resolve git directory");
-                let git_dir =
-                    PathBuf::from(String::from_utf8(out.stdout)?.trim()).canonicalize()?;
-                let repo = Repository {
-                    id: repo_id.into(),
-                    path: root,
-                    git_dir,
-                };
-                self.put(&key("r", repo_id), &repo)?;
+                let lock = self.build_lock(repo_id);
+                let _setup = lock
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("repository setup lock poisoned"))?;
+                self.repository_id_available(repo_id)?;
+                if op == "repo_clone" {
+                    return self.clone_repository(repo_id, string(a, "source")?);
+                }
+                let repo = self.inspect_repository(repo_id, Path::new(string(a, "path")?))?;
+                self.publish_repository(&repo)?;
                 return Ok(serde_json::to_value(repo)?);
             }
             "repo_list" => {
@@ -427,7 +634,7 @@ impl Engine {
                 let repo = self.repo(string(a, "repo")?)?;
                 let ws_id = string(a, "workspace")?;
                 valid_id(ws_id)?;
-                let base = git::resolve(&repo, optional(a, "reference", "HEAD"))?;
+                let base = git::resolve(&self.db, &repo, optional(a, "reference", "HEAD"))?;
                 self.import_base(&repo, &base)?;
                 let rev = Revision {
                     id: id(),
@@ -546,14 +753,14 @@ impl Engine {
             "stats" | "storage_info" => return self.stats(),
             "repo_log" => {
                 let repo = self.repo(string(a, "repo")?)?;
-                let reference = git::resolve(&repo, optional(a, "reference", "HEAD"))?;
-                let n = number(a, "limit", 20).min(1000).to_string();
-                let out = git::run(
+                let reference = git::resolve(&self.db, &repo, optional(a, "reference", "HEAD"))?;
+                let out = git::log(
+                    &self.db,
                     &repo,
-                    &["log", "--format=%H%x09%at%x09%s", "-n", &n, &reference],
-                    None,
+                    &reference,
+                    number(a, "limit", 20).min(1000),
                 )?;
-                return Ok(json!({"log":String::from_utf8_lossy(&out)}));
+                return Ok(json!({"log":out}));
             }
             _ => {}
         }
@@ -1110,53 +1317,59 @@ impl Engine {
             string(a, "expected_revision")? == ws.head,
             "revision conflict"
         );
-        let repo = self.repo(&ws.repo)?;
+        let mut repo = self.repo(&ws.repo)?;
+        let repository = git::open(&self.db, &repo, self.config.compression_level)?;
         let mut converted = tree.clone();
         let mut reader = None;
         for (p, original) in tree {
-            let mut e = original.clone();
-            if e.source == "blob" {
-                let bytes = self.bytes(&repo, &e, &mut reader)?;
-                e.oid = String::from_utf8(git::run(
-                    &repo,
-                    &["hash-object", "-w", "--stdin"],
-                    Some(&bytes),
-                )?)?
-                .trim()
-                .into();
-                e.source = "git".into();
+            let mut entry = original.clone();
+            if entry.source == "blob" {
+                entry.oid = repository
+                    .blob(&self.bytes(&repo, &entry, &mut reader)?)?
+                    .to_string();
+                entry.source = "git".into();
             }
-            converted.insert(p.clone(), e);
+            converted.insert(p.clone(), entry);
         }
-        let root = git::write_tree(&repo, &converted)?;
+        let root = git::write_tree(&repository, &converted)?;
         let message = string(a, "message")?;
         ensure!(!message.trim().is_empty(), "empty commit message");
-        let oid = String::from_utf8(git::run(
-            &repo,
-            &[
-                "-c",
-                "core.hooksPath=",
-                "commit-tree",
-                &root,
-                "-p",
-                &rev.base,
-            ],
-            Some(message.as_bytes()),
-        )?)?
-        .trim()
-        .to_string();
+        let signature = git2::Signature::now(&repo.author_name, &repo.author_email)?;
+        let oid = repository
+            .commit(
+                None,
+                &signature,
+                &signature,
+                message,
+                &repository.find_tree(root)?,
+                &[&repository.find_commit(git2::Oid::from_str(&rev.base)?)?],
+            )?
+            .to_string();
         let reference = format!("refs/vwork/commits/{}/{}", ws.id, ws.head);
-        git::run(&repo, &["update-ref", &reference, &oid], None)?;
+        let transaction = self.db.begin_write()?;
+        {
+            let mut table = transaction.open_table(RECORDS)?;
+            let key = key("r", &repo.id);
+            repo = serde_json::from_slice(
+                table
+                    .get(key.as_str())?
+                    .context("repository missing")?
+                    .value(),
+            )?;
+            repo.refs.insert(reference.clone(), oid.clone());
+            table.insert(key.as_str(), serde_json::to_vec(&repo)?.as_slice())?;
+        }
+        transaction.commit()?;
         self.put(
             &format!("export/{}/{}", ws.repo, ws.head),
             &json!({"commit":oid,"reference":reference,"revision":ws.head}),
         )?;
         Ok(
-            json!({"commit":oid,"reference":reference,"revision":ws.head,"note":"commit exported without changing the original branch/index; virtual workspace retained"}),
+            json!({"commit":oid,"reference":reference,"revision":ws.head,"note":"commit stored in redb; original repository untouched; use a temporary copy for native Git access"}),
         )
     }
 
-    fn build_lock(&self, repo: &str) -> Arc<Mutex<()>> {
+    pub(crate) fn build_lock(&self, repo: &str) -> Arc<Mutex<()>> {
         self.build_locks
             .lock()
             .unwrap()
@@ -1182,7 +1395,8 @@ impl Engine {
         for (_, value) in self.scan("r/")? {
             let registered: Repository = serde_json::from_slice(&value)?;
             ensure!(
-                !dest.starts_with(&registered.path) && !registered.path.starts_with(dest),
+                !registered.path.is_absolute()
+                    || (!dest.starts_with(&registered.path) && !registered.path.starts_with(dest)),
                 "destination must not overlap any registered checkout"
             );
         }
@@ -1354,23 +1568,28 @@ impl Engine {
         let _guard = lock
             .lock()
             .map_err(|_| anyhow::anyhow!("build lock poisoned"))?;
-        let dest = self.home.join("build").join(&ws.repo);
-        self.materialize(ws, tree, &dest)?;
+        let mut lease = if let Some(lease) = self
+            .leases()?
+            .into_iter()
+            .find(|l| l.build && l.repo == ws.repo && l.state == "ready")
+        {
+            self.recover_lease(&lease)?;
+            lease
+        } else {
+            self.create_lease(
+                ws,
+                "configured build/package action",
+                true,
+                self.config.temporary_ttl_seconds,
+            )?
+        };
+        let view = self.prepare_lease(&mut lease, ws, tree)?;
+        let lease_root = self.lease_root(&lease);
+        let dest = lease_root.join("tree");
+        let admin = lease_root.join("git");
         let revision = self.revision(&ws.head)?;
         let repo = self.repo(&ws.repo)?;
-        let mut base = Tree::new();
-        let prefix = format!("t/{}/{}/", ws.repo, revision.base);
-        for (p, v) in self.scan(&prefix)? {
-            base.insert(p[prefix.len()..].into(), serde_json::from_slice(&v)?);
-        }
-        let changes = Self::tree_changes(&base, tree);
-        let admin = self.home.join("build-git").join(&ws.repo);
-        safe_ancestors(&admin)?;
-        safe_ancestors(&dest.join(".git"))?;
         let mut reader = None;
-        let view = git::prepare_build(&repo, &admin, &dest, &revision.base, &changes, |entry| {
-            self.bytes(&repo, entry, &mut reader)
-        })?;
         let mut before = BTreeMap::new();
         let mut package = None;
         let (name, steps, cwd, mut env, timeout) = match request {
@@ -1395,10 +1614,13 @@ impl Engine {
                     before.insert(p, content);
                 }
                 let fingerprint = packages::fingerprint(&project, &before)?;
-                let state_key = format!("package-state/{}/{}", project.repo, project.name);
+                let state_key = format!(
+                    "package-state/{}/{}/{}",
+                    lease.id, project.repo, project.name
+                );
                 let installed =
                     self.get::<String>(&state_key).ok().as_deref() == Some(&fingerprint);
-                let plan = packages::plan(&project, &action, &self.home, &dest, tree, installed)?;
+                let plan = packages::plan(&project, &action, &lease_root, &dest, tree, installed)?;
                 if plan.installs || plan.clears {
                     let txn = self.db.begin_write()?;
                     {
@@ -1461,6 +1683,7 @@ impl Engine {
                         &env,
                         remaining,
                         self.config.max_output_bytes,
+                        None,
                     )?;
                     output.append(next, self.config.max_output_bytes);
                     if !output.success {
@@ -1471,6 +1694,9 @@ impl Engine {
         }
         let run_id = id();
         let mut result = json!({"run":run_id,"workspace":ws.id,"revision":ws.head,"base_commit":revision.base,"task":name,"success":output.success,"exit_code":output.exit_code,"timed_out":output.timed_out,"stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"stdout_truncated":output.stdout_truncated,"stderr_truncated":output.stderr_truncated,"checkout":dest,"git_dir":admin,"timestamp":now()});
+        lease.expires_at = now().saturating_add(self.config.temporary_ttl_seconds);
+        self.lease_save(&lease)?;
+        result["temporary"] = self.lease_value(&lease);
         let mut physical = BTreeMap::new();
         let mut input_changes = Vec::new();
         for (path, old) in &before {
@@ -1495,21 +1721,7 @@ impl Engine {
             }
             physical.insert(path.clone(), content);
         }
-        let mut changed: BTreeSet<String> = String::from_utf8(git::run(
-            &view,
-            &[
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--name-only",
-                "-z",
-            ],
-            None,
-        )?)?
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(String::from)
-        .collect();
+        let mut changed: BTreeSet<String> = git::changed(&view)?.into_iter().collect();
         changed.extend(input_changes.iter().cloned());
         result["source_changes_truncated"] = json!(changed.len() > self.config.max_results);
         result["source_changes"] = json!(
@@ -1593,7 +1805,13 @@ impl Engine {
                 _ => {}
             }
         }
+        let git_objects = txn.open_table(git_store::OBJECTS)?;
+        let mut git_bytes = 0u64;
+        for item in git_objects.iter()? {
+            git_bytes += item?.1.value().len() as u64;
+        }
         Ok(json!({
+            "git_objects":git_objects.len()?, "compressed_git_bytes":git_bytes,
             "scope":"daemon", "repositories":repositories, "workspaces":workspaces,
             "revisions":revisions, "blobs":blobs, "compressed_blob_bytes":blob_bytes,
             "base_manifests":manifests, "base_entries":entries, "base_manifest_bytes":manifest_bytes,
@@ -1602,9 +1820,9 @@ impl Engine {
             "compression_level":self.config.compression_level,
             "sharing":{
                 "base_manifest_key":"repository_id+commit",
-                "git_base_content":"Read from registered Git object stores; not copied into redb",
+                "git_base_content":"All Git objects and source contents are stored in redb, shared across registrations by Git object ID",
                 "edited_blob_scope":"daemon", "edited_blob_key":"BLAKE3 of raw content",
-                "remote_url_deduplication":false,
+                "remote_url_deduplication":false, "git_object_scope":"daemon", "git_object_key":"Git SHA-1 of typed raw object",
                 "new_workspace":"One workspace record and one empty revision; reuses an imported base manifest for the same repository ID and commit",
                 "fork":"One workspace record pointing to the existing immutable revision; copies no manifest or content"
             },
@@ -1612,7 +1830,7 @@ impl Engine {
                 "Counts include retained and not-yet-collected records; inspection makes no changes",
                 "Record byte counts are serialized keys/values, not physical allocation per workspace",
                 "Database file size includes page overhead and reusable space; it is not the sum of live record sizes",
-                "Git object stores, build checkouts, exports and package caches are outside these database sizes",
+                "Temporary copies, exports and package caches are outside these database sizes; Git objects are included",
                 "Different repository registrations have separate base manifests, even for the same path or remote URL"
             ]
         }))
@@ -1642,6 +1860,14 @@ impl Engine {
                 }
                 let v: Value = serde_json::from_slice(v.value())?;
                 stack.push(string(&v, "revision")?.into());
+            }
+            for item in t.range("lease/"..)? {
+                let (k, v) = item?;
+                if !k.value().starts_with("lease/") {
+                    break;
+                }
+                let lease: crate::leases::Lease = serde_json::from_slice(v.value())?;
+                stack.push(lease.revision);
             }
             while let Some(r) = stack.pop() {
                 if !live.insert(r.clone()) {
@@ -1685,9 +1911,41 @@ impl Engine {
                 t.remove(k.as_str())?;
             }
         }
+        {
+            let records = txn.open_table(RECORDS)?;
+            let mut members = txn.open_table(git_store::MEMBERS)?;
+            let mut live = BTreeSet::new();
+            let mut orphaned = Vec::new();
+            for item in members.iter()? {
+                let (member, _) = item?;
+                let (repo, oid) = member
+                    .value()
+                    .split_once('/')
+                    .context("invalid Git membership")?;
+                if records.get(format!("r/{repo}").as_str())?.is_some() {
+                    live.insert(oid.to_string());
+                } else {
+                    orphaned.push(member.value().to_string());
+                }
+            }
+            for key in orphaned {
+                members.remove(key.as_str())?;
+            }
+            let mut objects = txn.open_table(git_store::OBJECTS)?;
+            let mut orphaned = Vec::new();
+            for item in objects.iter()? {
+                let (oid, _) = item?;
+                if !live.contains(oid.value()) {
+                    orphaned.push(oid.value().to_string());
+                }
+            }
+            for oid in orphaned {
+                objects.remove(oid.as_str())?;
+            }
+        }
         txn.commit()?;
         Ok(
-            json!({"removed_records":removed,"note":"freed pages are reused; stop daemon and run compact to shrink the database file; base Git pins remain"}),
+            json!({"removed_records":removed,"note":"freed pages are reused; stop daemon and run compact to shrink the database file; Git objects and base manifests remain in redb"}),
         )
     }
 }
@@ -1709,7 +1967,7 @@ fn resolved_physical_path(path: &Path) -> Result<PathBuf> {
     Ok(existing.canonicalize()?.join(path.strip_prefix(existing)?))
 }
 
-fn safe_ancestors(path: &Path) -> Result<()> {
+pub(crate) fn safe_ancestors(path: &Path) -> Result<()> {
     for p in path.ancestors() {
         if let Ok(meta) = std::fs::symlink_metadata(p) {
             #[cfg(target_os = "macos")]
@@ -1799,6 +2057,46 @@ impl ProcessOutput {
         self.timed_out = next.timed_out;
     }
 }
+pub(crate) fn git_credentials(url: &str, user: Option<&str>) -> Result<git2::Cred> {
+    ensure!(
+        !url.contains(['\n', '\r']) && !user.unwrap_or("").contains(['\n', '\r']),
+        "invalid credential request"
+    );
+    let mut input = format!("url={url}\n");
+    if let Some(user) = user {
+        input.push_str(&format!("username={user}\n"));
+    }
+    input.push('\n');
+    let args = ["-c", "credential.interactive=false", "credential", "fill"].map(String::from);
+    let env = BTreeMap::from([
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        ("GCM_INTERACTIVE".into(), "never".into()),
+    ]);
+    let output = execute_process(
+        "git",
+        &args,
+        &std::env::temp_dir(),
+        &env,
+        std::time::Duration::from_secs(30),
+        65536,
+        Some(input.as_bytes()),
+    )?;
+    ensure!(
+        output.success && !output.stdout_truncated,
+        "noninteractive credential lookup failed"
+    );
+    let text = std::str::from_utf8(&output.stdout)?;
+    let values: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once('=')).collect();
+    Ok(git2::Cred::userpass_plaintext(
+        values
+            .get("username")
+            .context("missing credential username")?,
+        values
+            .get("password")
+            .context("missing credential password")?,
+    )?)
+}
+
 fn execute_process(
     program: &str,
     args: &[String],
@@ -1806,12 +2104,17 @@ fn execute_process(
     env: &BTreeMap<String, String>,
     timeout: std::time::Duration,
     max: usize,
+    input: Option<&[u8]>,
 ) -> Result<ProcessOutput> {
     let mut cmd = crate::process::command(program);
     cmd.args(args)
         .current_dir(cwd)
         .envs(env)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     git::clear_overrides(&mut cmd);
@@ -1832,6 +2135,14 @@ fn execute_process(
             return Err(error);
         }
     };
+    if let Some(input) = input {
+        use std::io::Write;
+        if let Err(error) = child.stdin.take().unwrap().write_all(input) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error.into());
+        }
+    }
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let out_thread = std::thread::spawn(move || capture(stdout, max));

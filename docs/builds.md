@@ -11,7 +11,7 @@ PowerShell example for a Rust monorepo:
 @{
   repo='mono'; name='test'; program='cargo'
   args=@('test','--locked'); cwd=''; timeout_seconds=600
-  env=@{ CARGO_TARGET_DIR='C:\build-cache\mono-target' }
+  env=@{}
 } | ConvertTo-Json -Depth 8 -Compress |
   & $Vwork --home $State call task_set --json -
 ```
@@ -19,7 +19,7 @@ PowerShell example for a Rust monorepo:
 macOS equivalent:
 
 ```sh
-vwork --home /path/to/state call task_set --json '{"repo":"mono","name":"test","program":"cargo","args":["test","--locked"],"cwd":"","timeout_seconds":600,"env":{"CARGO_TARGET_DIR":"/path/to/shared-target"}}'
+vwork --home /path/to/state call task_set --json '{"repo":"mono","name":"test","program":"cargo","args":["test","--locked"],"cwd":"","timeout_seconds":600,"env":{}}'
 ```
 
 Choose tools already available on your AVD. Environment values are stored in the
@@ -28,7 +28,7 @@ lookup uses the daemon's inherited PATH, so restart it if your environment chang
 
 The model calls `vwork_workspace_run_task` with its workspace, current
 `expected_revision`, and `task: "test"`. vwork exports the pinned snapshot into
-`<home>/build/mono`, runs the configured executable with argument-array semantics
+a tracked temporary copy, runs the configured executable with argument-array semantics
 and returns success, exit code, timeout, captured output and revision.
 
 For custom `.cmd`/`.bat` scripts, explicitly configure `cmd.exe` and arguments such as
@@ -42,28 +42,26 @@ running task because another workspace requested a build. Different repos have
 different locks. Export requests for the same repo share the lock. Virtual edits
 can continue concurrently, so always report the **returned tested revision**.
 
-Before each run, vwork repairs modified tracked files and removes tracked files
+Before each run, vwork saves recoverable source edits into a separate recovery workspace, repairs modified tracked files and removes tracked files
 that disappeared from the next snapshot. Generated/untracked files remain for
 incremental caches. Empty obsolete directories are removed. A newly tracked path
 that would overwrite an existing untracked file fails visibly. An explicit clean
 of the stopped build tree is appropriate after branch-sensitive cache failures.
 
-Package projects use the same checkout and lock. See [npm, Cargo and pip](packages.md)
+Package projects use the same checkout and lock. See [package tools](packages.md)
 for managed actions; custom tasks remain useful for other tools and unusual flags.
 
 ## Git version discovery without a clone
 
-The build tree contains a regular `.git` **pointer file**. Its private admin
-directory is `<home>/build-git/<repo>`. No symlink or `git worktree add` is needed.
-Git's `objects/info/alternates` mechanism borrows the registered repository's
-existing objects. vwork owns a separate index, detached HEAD, config and refs;
-it does not copy the original object database or mutate the original index,
-branch or working files during build preparation.
+The build tree contains a regular `.git` pointer to `<lease>/git`. Objects and
+refs are exported from redb using git2/libgit2; no original Git directory or
+alternates are required. This disk view exists only for tools needing native Git,
+and is removed with the lease. Virtual reads and edits never require it.
 
 Before each task or package action:
 
 1. HEAD becomes the workspace's real **base Git commit**.
-2. Heads, tags and remote-tracking ref names/OIDs are refreshed from the source.
+2. Heads, tags and remote-tracking ref names/OIDs are refreshed from redb.
 3. The private index becomes the complete virtual snapshot. Compressed overlay
    content gets Git objects only in the private admin directory.
 4. Git-aware tools run normally from the build tree or a project subdirectory.
@@ -90,16 +88,18 @@ config, remotes and hooks are not copied. Private hooks are disabled. Native Git
 mutations affect this disposable build view, not the virtual workspace, and the
 next run reconstructs its HEAD/index/refs. Use virtual operations for agent work.
 
-The source repository must remain available. Its existing base pins keep required
-history alive. Overlay Git objects consume additional disk space, as does one
-index; they are shared by all builds of that repo. When the daemon is stopped,
-`<home>/build-git/<repo>` can be removed and will be regenerated. The physical
-source tree is still needed by ordinary compilers; Git metadata borrowing does
-not make those compilers read redb directly.
+Request physical copies sparingly. Use `workspace_temporary` with a concrete
+`purpose` for filesystem-only tooling, or let configured tasks/package actions
+create/reuse a lease. Import wanted edits and save artifacts, then call
+`temporary_release` with the returned ID. Renew before expiry while still using
+it. `temporary_list` exposes active copies, cleanup failures and recovery names.
+Expiry/startup cleanup preserves bounded source edits into redb and removes the
+copy; it cannot preserve unlimited generated artifacts. See the cleanup contract
+in [architecture](architecture.md).
 
 ## Task results and supervision
 
-Results include `checkout`, `git_dir`, `base_commit`, `revision`, and
+Results include `temporary` (lease ID/path/expiry), `checkout`, `git_dir`, `base_commit`, `revision`, and
 `source_changes`. The latter lists tracked source edits/deletions relative to the
 virtual snapshot, bounded by `max_results`, with `source_changes_truncated`.
 Package actions additionally detect known manifest/lockfile creation. Arbitrary

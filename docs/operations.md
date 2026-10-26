@@ -23,7 +23,13 @@ Use forward slashes for all **virtual** paths, on every OS.
 | Operation | Arguments beyond optional workspace | Behavior |
 |---|---|---|
 | `storage_info` | none | Read-only daemon storage counters, shared manifests/blobs and deduplication scopes |
-| `repo_list` | none | Registered IDs/paths |
+| `repo_list` | none | Registered IDs/provenance/refs |
+| `repo_register` | `repo`, `path` | Import existing repository objects/refs into redb |
+| `repo_clone` | `repo`, `source` | Clone a selected URL or local repo into redb |
+| `workspace_temporary` | `expected_revision`, `purpose`, optional `ttl_seconds` | Tracked temporary filesystem copy |
+| `temporary_list` | none | Active copies, cleanup failures, transfer staging, recent recovery workspaces |
+| `temporary_renew` | `lease`, optional `ttl_seconds` | Renew while a tool still needs a copy |
+| `temporary_release` | `lease`, optional `discard_changes` | Save bounded source recovery, remove physical copy; intentional discard is explicit |
 | `repo_log` | `repo`, optional `reference`, `limit` | Actual Git history |
 | `workspace_list` | none | IDs, repos, current heads |
 | `workspace_create` | `workspace`, `repo`, optional `reference` | From committed Git reference (default HEAD) |
@@ -49,11 +55,11 @@ Use forward slashes for all **virtual** paths, on every OS.
 | `workspace_import` | `expected_revision`, `source`, `paths` | Explicit physical edits/deletions |
 | `task_list` | `repo` | Human-defined build/test tasks |
 | `workspace_run_task` | `expected_revision`, `task` | Serialized build of pinned snapshot |
-| `package_list` | `repo` | Configured npm/Cargo/pip projects and allowed actions |
+| `package_list` | `repo` | Configured npm/Cargo/pip/uv/CDK projects and allowed actions |
 | `package_run` | `expected_revision`, `project`, `action` | Serialized package action; reports physical source/input changes |
 | `workspace_drop` | `expected_revision` | Remove one workspace reference |
 
-`storage_info`, `repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.
+`temporary_list`, `temporary_renew`, `temporary_release`, `repo_register`, `repo_clone`, `storage_info`, `repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.
 A newly created workspace requires a new explicit ID, even when the bridge is
 bound to another existing one.
 
@@ -112,7 +118,6 @@ These are deliberately absent from the MCP tool list:
 | Operation | Arguments | Purpose |
 |---|---|---|
 | `health` | none | Version/schema/compression |
-| `repo_register` | `repo`, `path` | Register existing non-bare Git checkout |
 | `task_set` | `repo`, `name`, `program`, optional `args`, `cwd`, `timeout_seconds`, `env` | Save/replace allowed task |
 | `package_configure` | `repo`, `name`, `manager`, optional `path`, `program`, `args`, `env`, `offline`, `requirements`, `inputs`, `scripts` | Save/replace package project; see [package guide](packages.md) |
 | `stats` | none | DB file size, blob count/compressed bytes, revision/workspace/repo counts |
@@ -143,24 +148,16 @@ exported-snapshot pins reference it.
    `vwork --home <state> compact`, then start it again. Compaction requires working
    free space and exclusive database access.
 
-Base manifests and Git base pins remain in this first schema. There is no
-automatic repo-unregister/base-pruning operation. Do not assume dropping all
-workspaces deletes the original repo or removes its pinned Git objects. Manually
-removing Git pins while vwork still needs their bases can break workspaces.
+Base manifests and imported Git history remain in redb; there is no repository
+unregister/history-pruning operation. GC also reclaims object records left by
+failed unpublished imports. Registered Git objects remain shared by object ID.
 
-Build caches and explicit physical exports are outside GC. With the daemon
-stopped and builds finished, you may delete disposable `<home>/build/<repo>`
-directories; vwork recreates them on the next build. Remove physical exports only
-when their edits are no longer needed. Their deletion uses the normal filesystem;
-the cheap-deletion guarantee applies to virtual workspaces, not materialized trees.
-
-`package_run` with `action: "clean"` removes the selected project's node_modules,
-Cargo target directory or Python environment under the same repo lock. This also
-invalidates its prepared dependency state. With the daemon stopped you may remove
-`<home>/build-git/<repo>` to reclaim cached overlay Git objects; it is rebuilt on
-demand. Wheel artifacts under `<home>/artifacts` are disposable after use. Global
-package-manager caches have their own maintenance commands and are not redb GC.
-If you manually remove a dependency environment, run its install action again.
+Use `temporary_list` and `temporary_release` to reclaim physical copies. Builds
+and packages return lease IDs; their environments, outputs and private Git stores
+are removed together. Expiry/startup cleanup provides a fallback. Import wanted
+source edits and save artifacts first. Cleanup errors retain their journal and
+allocation slot for retry; inspect them instead of allocating unlimited copies.
+Durable `workspace_export` destinations and global package caches remain explicit.
 
 There is no online automatic eviction of source history or base manifests. For an
 entirely retired dataset, retain a verified backup, stop its daemon, and remove
@@ -175,13 +172,13 @@ register the existing original repos again.
   to defeat a running owner. The OS releases the lock on process exit.
 - **Revision conflict:** inspect current content and reconcile, then edit with the
   new head. A successful build of an earlier head does not validate newer changes.
-- **Missing Git object:** original repo moved/pruned or a dependency store is
-  unavailable. Restore the original Git object store; the DB has metadata, not all
-  base file contents.
+- **Missing Git object:** restore a verified redb backup. Only a legacy registration still
+  awaiting migration needs its original Git object store; schema 2 keeps objects
+  and base contents in the database.
 - **Export rejected:** check absolute path, no repo overlap, empty/managed target,
   filename portability and symlink/reparse points. AVD redirected profile folders
   may be reparse points; choose an approved plain local folder instead.
-- **Commit export failed:** configure Git user.name/user.email in the original repo.
+- **Commit export failed:** registration captures Git user.name/user.email, with vwork defaults when absent. Inspect the reported error; source Git is not required after migration.
 - **Build needs ignored config:** create it explicitly in the build directory or
   arrange it in your approved task. It is not imported from the original checkout.
 - **Package inputs not prepared:** run that project's install action, import any

@@ -1,8 +1,70 @@
-use crate::model::{Entry, Repository, Tree};
+use crate::{
+    git_store,
+    model::{Entry, Repository, Tree},
+};
 use anyhow::{Context, Result, bail, ensure};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use git2::{ObjectType, Oid};
+use redb::Database;
+use std::{collections::BTreeMap, path::Path, process::Command, sync::Arc};
+
+/// Accept ordinary Git transports or an explicit local path, never helper syntax
+/// or command-line options. Git also receives a protocol allowlist after rewrites.
+pub fn clone_source(source: &str) -> Result<String> {
+    ensure!(
+        !source.is_empty()
+            && source.len() <= 8192
+            && !source.starts_with('-')
+            && !source.chars().any(char::is_control),
+        "invalid clone source"
+    );
+    if Path::new(source).is_absolute() {
+        return Ok(path_argument(Path::new(source))
+            .to_string_lossy()
+            .into_owned());
+    }
+    ensure!(
+        !source.chars().any(char::is_whitespace),
+        "clone URL cannot contain whitespace"
+    );
+    if let Some((scheme, rest)) = source.split_once("://") {
+        ensure!(
+            ["https", "http", "ssh", "git", "file"].contains(&scheme),
+            "unsupported Git transport"
+        );
+        ensure!(
+            !rest.contains(['?', '#']),
+            "use configured Git credentials, not URL query tokens or fragments"
+        );
+        let authority = rest.split('/').next().unwrap_or("");
+        ensure!(
+            scheme == "file" || !authority.is_empty(),
+            "clone URL needs a host"
+        );
+        let host = if let Some((user, host)) = authority.rsplit_once('@') {
+            ensure!(
+                !user.contains(':'),
+                "use configured Git credentials, not a password in the URL"
+            );
+            host
+        } else {
+            authority
+        };
+        ensure!(!host.starts_with('-'), "invalid clone host");
+        return Ok(source.into());
+    }
+    if let Some((host, path)) = source.split_once(':') {
+        ensure!(
+            !host.is_empty()
+                && !host.contains(['/', '\\'])
+                && !path.is_empty()
+                && !path.starts_with(':')
+                && !host.rsplit('@').next().unwrap_or("").starts_with('-'),
+            "invalid SSH clone source"
+        );
+        return Ok(source.into());
+    }
+    bail!("clone source must be an HTTPS/SSH/Git/file URL, SSH host:path, or absolute local path")
+}
 
 /// Git for Windows expects its own normalized path syntax, not Rust's verbatim prefix.
 pub fn path_argument(path: &Path) -> std::ffi::OsString {
@@ -34,145 +96,184 @@ pub fn path_argument(path: &Path) -> std::ffi::OsString {
     }
 }
 
-pub fn command(repo: &Repository) -> Command {
-    let mut cmd = crate::process::command("git");
-    cmd.args(["-c", "core.longpaths=true"])
-        .arg("--git-dir")
-        .arg(path_argument(&repo.git_dir));
-    // Never inherit caller index/worktree overrides or interactive Git behavior.
-    clear_overrides(&mut cmd);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    cmd
+pub fn open(db: &Arc<Database>, repo: &Repository, level: i32) -> Result<git2::Repository> {
+    ensure!(repo.stored, "repository has not been imported into redb");
+    Ok(git2::Repository::from_odb(git_store::odb(
+        db.clone(),
+        &repo.id,
+        level,
+    )?)?)
 }
 
-pub fn run(repo: &Repository, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
-    let mut child = command(repo)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("start Git (Git must be installed)")?;
-    // Drain stdout/stderr while writing, avoiding pipe deadlocks for large objects.
-    let bytes = input.unwrap_or_default().to_vec();
-    let mut stdin = child.stdin.take().unwrap();
-    let writer = std::thread::spawn(move || stdin.write_all(&bytes));
-    let result = child.wait_with_output()?;
-    writer
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git input thread panicked"))??;
-    ensure!(
-        result.status.success(),
-        "Git {} failed: {}",
-        args.first().unwrap_or(&""),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    Ok(result.stdout)
+/// Import every available object (including history and tags), not just HEAD's tree.
+/// Publication is separate and occurs only after the object import succeeds.
+pub fn import(
+    db: &Arc<Database>,
+    source: &git2::Repository,
+    repo: &mut Repository,
+    level: i32,
+    timeout: u64,
+) -> Result<()> {
+    let odb = source.odb()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    let mut failure = None;
+    odb.foreach(|id| {
+        let result = (|| -> Result<()> {
+            ensure!(std::time::Instant::now() < deadline, "Git import timed out");
+            let object = odb.read(*id)?;
+            git_store::write(db, &repo.id, *id, object.kind(), object.data(), level)
+        })();
+        if let Err(error) = result {
+            failure = Some(error);
+            false
+        } else {
+            true
+        }
+    })
+    .or_else(|error| {
+        if failure.is_some() {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    })?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    repo.refs.clear();
+    for reference in source.references()? {
+        let reference = reference?.resolve()?;
+        if let (Ok(name), Some(id)) = (reference.name(), reference.target()) {
+            repo.refs.insert(name.into(), id.to_string());
+        }
+    }
+    if let Ok(head) = source.head() {
+        repo.refs
+            .insert("HEAD".into(), head.peel_to_commit()?.id().to_string());
+    }
+    let config = source.config()?;
+    repo.author_name = config
+        .get_string("user.name")
+        .unwrap_or_else(|_| "vwork".into());
+    repo.author_email = config
+        .get_string("user.email")
+        .unwrap_or_else(|_| "vwork@localhost".into());
+    repo.stored = true;
+    Ok(())
 }
 
-pub fn resolve(repo: &Repository, reference: &str) -> Result<String> {
+pub fn resolve(db: &Arc<Database>, repo: &Repository, reference: &str) -> Result<String> {
     ensure!(
-        !reference.starts_with('-') && !reference.contains('\0'),
+        !reference.is_empty() && !reference.starts_with('-') && !reference.contains('\0'),
         "invalid revision"
     );
-    Ok(String::from_utf8(run(
-        repo,
-        &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
-        None,
-    )?)?
-    .trim()
-    .into())
+    let split = reference.find(['~', '^', ':']).unwrap_or(reference.len());
+    let name = &reference[..split];
+    let mut matches = Vec::new();
+    for candidate in [
+        name.to_string(),
+        format!("refs/{name}"),
+        format!("refs/heads/{name}"),
+        format!("refs/tags/{name}"),
+        format!("refs/remotes/{name}"),
+    ] {
+        if let Some(oid) = repo.refs.get(&candidate) {
+            matches.push(oid.clone());
+        }
+    }
+    matches.sort();
+    matches.dedup();
+    ensure!(matches.len() <= 1, "ambiguous revision");
+    let oid = if let Some(id) = matches.first() {
+        id.clone()
+    } else {
+        ensure!(
+            name.len() == 40 && name.bytes().all(|x| x.is_ascii_hexdigit()),
+            "unknown reference; use a registered ref or full commit ID"
+        );
+        name.into()
+    };
+    let repository = open(db, repo, 3)?;
+    Ok(repository
+        .revparse_single(&format!("{oid}{}", &reference[split..]))?
+        .peel_to_commit()?
+        .id()
+        .to_string())
 }
 
-pub fn tree(repo: &Repository, commit: &str) -> Result<Tree> {
-    let raw = run(repo, &["ls-tree", "-rlz", "--full-tree", commit], None)?;
-    let mut result = Tree::new();
-    for item in raw.split(|b| *b == 0).filter(|s| !s.is_empty()) {
-        let tab = item
-            .iter()
-            .position(|b| *b == b'\t')
-            .context("invalid ls-tree record")?;
-        let header = std::str::from_utf8(&item[..tab])?;
-        let parts: Vec<_> = header.split_whitespace().collect();
-        ensure!(parts.len() == 4, "invalid Git tree header");
-        let name = String::from_utf8(item[tab + 1..].to_vec())
-            .context("non-UTF8 Git paths are not supported")?;
-        crate::model::path(&name)?;
-        result.insert(
-            name,
-            Entry {
-                source: "git".into(),
-                oid: parts[2].into(),
-                mode: parts[0].into(),
-                size: parts[3].parse().unwrap_or(0),
-            },
-        );
+pub fn tree(db: &Arc<Database>, repo: &Repository, commit: &str) -> Result<Tree> {
+    let repository = open(db, repo, 3)?;
+    let root = repository.find_commit(Oid::from_str(commit)?)?.tree()?;
+    fn visit(
+        repository: &git2::Repository,
+        tree: git2::Tree<'_>,
+        prefix: &str,
+        result: &mut Tree,
+    ) -> Result<()> {
+        for entry in &tree {
+            let path = format!(
+                "{prefix}{}",
+                entry.name().context("non-UTF8 Git paths are unsupported")?
+            );
+            crate::model::path(&path)?;
+            if entry.kind() == Some(ObjectType::Tree) {
+                visit(
+                    repository,
+                    repository.find_tree(entry.id())?,
+                    &format!("{path}/"),
+                    result,
+                )?;
+            } else {
+                let size = if entry.kind() == Some(ObjectType::Blob) {
+                    repository.odb()?.read_header(entry.id())?.0 as u64
+                } else {
+                    0
+                };
+                result.insert(
+                    path,
+                    Entry {
+                        source: "git".into(),
+                        oid: entry.id().to_string(),
+                        mode: format!("{:06o}", entry.filemode()),
+                        size,
+                    },
+                );
+            }
+        }
+        Ok(())
     }
+    let mut result = Tree::new();
+    visit(&repository, root, "", &mut result)?;
     Ok(result)
 }
 
 pub struct Reader {
-    child: Child,
-    input: Option<ChildStdin>,
-    output: BufReader<ChildStdout>,
+    db: Arc<Database>,
 }
 impl Reader {
-    pub fn new(repo: &Repository) -> Result<Self> {
-        let mut child = command(repo)
-            .arg("cat-file")
-            .arg("--batch")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        Ok(Self {
-            input: child.stdin.take(),
-            output: BufReader::new(child.stdout.take().unwrap()),
-            child,
-        })
+    pub fn new(db: &Arc<Database>) -> Result<Self> {
+        Ok(Self { db: db.clone() })
     }
     pub fn blob(&mut self, oid: &str, limit: usize) -> Result<Vec<u8>> {
+        let (kind, bytes) = git_store::read(&self.db, Oid::from_str(oid)?)?;
         ensure!(
-            oid.bytes().all(|b| b.is_ascii_hexdigit()),
-            "invalid object id"
+            kind == ObjectType::Blob && bytes.len() <= limit,
+            "not a blob or exceeds max_file_bytes"
         );
-        writeln!(self.input.as_mut().context("Git reader closed")?, "{oid}")?;
-        self.input.as_mut().unwrap().flush()?;
-        let mut header = String::new();
-        self.output.read_line(&mut header)?;
-        let parts: Vec<_> = header.split_whitespace().collect();
-        ensure!(
-            parts.len() == 3 && parts[1] == "blob",
-            "Git object unavailable or not blob: {oid}"
-        );
-        let len: usize = parts[2].parse()?;
-        ensure!(len <= limit, "file exceeds max_file_bytes ({limit})");
-        let mut content = vec![0; len];
-        self.output.read_exact(&mut content)?;
-        let mut newline = [0];
-        self.output.read_exact(&mut newline)?;
-        ensure!(newline[0] == b'\n', "invalid cat-file framing");
-        Ok(content)
-    }
-}
-impl Drop for Reader {
-    fn drop(&mut self) {
-        self.input.take();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        Ok(bytes)
     }
 }
 
-pub fn write_tree(repo: &Repository, entries: &Tree) -> Result<String> {
+pub fn write_tree(repository: &git2::Repository, entries: &Tree) -> Result<Oid> {
     #[derive(Default)]
     struct Node {
         files: Tree,
-        dirs: std::collections::BTreeMap<String, Node>,
+        dirs: BTreeMap<String, Node>,
     }
-    fn insert(node: &mut Node, parts: &[&str], e: Entry) -> Result<()> {
+    fn insert(node: &mut Node, parts: &[&str], entry: Entry) -> Result<()> {
         if parts.len() == 1 {
             ensure!(!node.dirs.contains_key(parts[0]), "file/directory conflict");
-            node.files.insert(parts[0].into(), e);
+            node.files.insert(parts[0].into(), entry);
         } else {
             ensure!(
                 !node.files.contains_key(parts[0]),
@@ -181,208 +282,146 @@ pub fn write_tree(repo: &Repository, entries: &Tree) -> Result<String> {
             insert(
                 node.dirs.entry(parts[0].into()).or_default(),
                 &parts[1..],
-                e,
+                entry,
             )?;
         }
         Ok(())
     }
-    fn emit(repo: &Repository, node: &Node) -> Result<String> {
-        let mut records = Vec::new();
-        for (name, e) in &node.files {
-            let kind = if e.mode == "160000" { "commit" } else { "blob" };
-            records.extend_from_slice(format!("{} {kind} {}\t{name}\0", e.mode, e.oid).as_bytes());
+    fn emit(repository: &git2::Repository, node: &Node) -> Result<Oid> {
+        let mut builder = repository.treebuilder(None)?;
+        for (name, entry) in &node.files {
+            builder.insert(
+                name,
+                Oid::from_str(&entry.oid)?,
+                i32::from_str_radix(&entry.mode, 8)?,
+            )?;
         }
-        for (name, dir) in &node.dirs {
-            records.extend_from_slice(
-                format!("040000 tree {}\t{name}\0", emit(repo, dir)?).as_bytes(),
-            );
+        for (name, child) in &node.dirs {
+            builder.insert(name, emit(repository, child)?, 0o040000)?;
         }
-        Ok(
-            String::from_utf8(run(repo, &["mktree", "-z"], Some(&records))?)?
-                .trim()
-                .into(),
-        )
+        Ok(builder.write()?)
     }
-    let mut root = Node::default();
-    for (name, e) in entries {
-        if e.source != "git" {
-            bail!("unconverted virtual blob");
-        }
-        insert(&mut root, &name.split('/').collect::<Vec<_>>(), e.clone())?;
+    let mut node = Node::default();
+    for (name, entry) in entries {
+        ensure!(entry.source == "git", "unconverted virtual blob");
+        insert(
+            &mut node,
+            &name.split('/').collect::<Vec<_>>(),
+            entry.clone(),
+        )?;
     }
-    emit(repo, &root)
+    emit(repository, &node)
 }
 
-/// Build a private Git view without cloning objects or touching the source index/refs.
-/// The private index represents virtual content; HEAD remains its real Git base.
+pub fn log(db: &Arc<Database>, repo: &Repository, reference: &str, limit: usize) -> Result<String> {
+    let repository = open(db, repo, 3)?;
+    let mut walk = repository.revwalk()?;
+    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+    walk.push(Oid::from_str(reference)?)?;
+    let mut text = String::new();
+    for oid in walk.take(limit) {
+        let c = repository.find_commit(oid?)?;
+        text.push_str(&format!(
+            "{}\t{}\t{}\n",
+            c.id(),
+            c.time().seconds(),
+            c.summary()?.unwrap_or("")
+        ));
+    }
+    Ok(text)
+}
+
+/// A disposable compatibility repository for external tools that require .git.
+/// All authoritative objects remain in redb. No alternates or original checkout access.
 pub fn prepare_build(
+    db: &Arc<Database>,
     source: &Repository,
     admin: &Path,
     checkout: &Path,
     base: &str,
-    changes: &std::collections::BTreeMap<String, Option<Entry>>,
+    entries: &Tree,
     mut content: impl FnMut(&Entry) -> Result<Vec<u8>>,
-) -> Result<Repository> {
-    let object_format =
-        String::from_utf8(run(source, &["rev-parse", "--show-object-format"], None)?)?;
-    let object_format = object_format.trim();
-    ensure!(
-        ["sha1", "sha256"].contains(&object_format),
-        "unsupported Git object format"
-    );
-    let view = Repository {
-        id: source.id.clone(),
-        path: checkout.to_path_buf(),
-        git_dir: admin.to_path_buf(),
-    };
-    if !admin.join("HEAD").exists() {
-        std::fs::create_dir_all(admin)?;
-        let output = crate::process::command("git")
-            .args([
-                "init",
-                "--bare",
-                "--quiet",
-                "--template=",
-                &format!("--object-format={object_format}"),
-            ])
-            .arg(path_argument(admin))
-            .output()?;
-        ensure!(
-            output.status.success(),
-            "initialize build Git: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let objects = String::from_utf8(run(
-        source,
-        &[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            "objects",
-        ],
-        None,
-    )?)?;
-    let object_path = path_argument(Path::new(objects.trim()));
-    let object_path = object_path
-        .to_str()
-        .context("Git object path is not UTF-8")?;
-    ensure!(
-        !object_path.contains(['\n', '\r']),
-        "newline in Git object path"
-    );
-    std::fs::create_dir_all(admin.join("objects/info"))?;
-    std::fs::write(
-        admin.join("objects/info/alternates"),
-        format!("{object_path}\n"),
-    )?;
+) -> Result<git2::Repository> {
+    let mut options = git2::RepositoryInitOptions::new();
+    options.bare(true).external_template(false);
+    let view = git2::Repository::init_opts(admin, &options)?;
+    let mut config = view.config()?;
     for (key, value) in [
         ("core.bare", "false"),
         ("core.autocrlf", "false"),
         ("core.symlinks", "false"),
         ("core.logAllRefUpdates", "false"),
         ("gc.auto", "0"),
-        ("maintenance.auto", "false"),
-        ("index.version", "4"),
         (
             "core.filemode",
             if cfg!(windows) { "false" } else { "true" },
         ),
     ] {
-        run(&view, &["config", "--local", key, value], None)?;
+        config.set_str(key, value)?;
     }
-    let worktree = path_argument(checkout);
-    run(
-        &view,
-        &[
-            "config",
-            "--local",
-            "core.worktree",
-            worktree.to_str().context("non-UTF8 build path")?,
-        ],
-        None,
-    )?;
+    config.set_str("core.worktree", &path_argument(checkout).to_string_lossy())?;
     let hooks = admin.join("disabled-hooks");
     std::fs::create_dir_all(&hooks)?;
-    let hooks = path_argument(&hooks);
-    run(
-        &view,
-        &[
-            "config",
-            "--local",
-            "core.hooksPath",
-            hooks.to_str().context("non-UTF8 hooks path")?,
-        ],
-        None,
-    )?;
-    // Only ref names and OIDs are copied. Objects remain in the source's object database.
-    let mut refs = std::collections::BTreeMap::new();
-    for line in String::from_utf8(run(
-        source,
-        &[
-            "for-each-ref",
-            "--format=%(refname) %(objectname)",
-            "refs/heads",
-            "refs/tags",
-            "refs/remotes",
-        ],
-        None,
-    )?)?
-    .lines()
-    {
-        let (name, oid) = line.split_once(' ').context("invalid Git ref record")?;
-        refs.insert(name.to_string(), oid.to_string());
-    }
-    let previous = String::from_utf8(run(&view, &["for-each-ref", "--format=%(refname)"], None)?)?;
-    let mut updates = String::new();
-    for name in previous.lines() {
-        if !refs.contains_key(name) {
-            updates.push_str(&format!("delete {name}\n"));
+    config.set_str("core.hooksPath", &path_argument(&hooks).to_string_lossy())?;
+    view.set_workdir(checkout, false)?;
+    let odb = view.odb()?;
+    for oid in git_store::members(db, &source.id)? {
+        if !odb.exists(oid) {
+            let (kind, bytes) = git_store::read(db, oid)?;
+            ensure!(odb.write(kind, &bytes)? == oid, "object export mismatch");
         }
     }
-    for (name, oid) in refs {
-        updates.push_str(&format!("update {name} {oid}\n"));
+    let names: Vec<String> = view
+        .references()?
+        .filter_map(|r| r.ok()?.name().ok().map(String::from))
+        .collect();
+    for name in names {
+        if !source.refs.contains_key(&name) {
+            view.find_reference(&name)?.delete()?;
+        }
     }
-    if !updates.is_empty() {
-        run(&view, &["update-ref", "--stdin"], Some(updates.as_bytes()))?;
+    for (name, oid) in &source.refs {
+        if name != "HEAD" {
+            view.reference(name, Oid::from_str(oid)?, true, "vwork temporary view")?;
+        }
     }
-    run(&view, &["update-ref", "--no-deref", "HEAD", base], None)?;
-    run(&view, &["read-tree", base], None)?;
-    let mut index = Vec::new();
-    for (path, entry) in changes {
-        let (mode, oid) = if let Some(entry) = entry {
-            let oid = if entry.source == "git" {
-                entry.oid.clone()
-            } else {
-                String::from_utf8(run(
-                    &view,
-                    &["hash-object", "-w", "--stdin"],
-                    Some(&content(entry)?),
-                )?)?
-                .trim()
-                .to_string()
-            };
-            (entry.mode.clone(), oid)
-        } else {
-            (
-                "0".into(),
-                "0".repeat(if object_format == "sha256" { 64 } else { 40 }),
-            )
-        };
-        index.extend_from_slice(format!("{mode} {oid}\t{path}\0").as_bytes());
+    view.set_head_detached(Oid::from_str(base)?)?;
+    let mut converted = entries.clone();
+    for (name, entry) in entries {
+        if entry.source != "git" {
+            let mut e = entry.clone();
+            e.oid = view.blob(&content(entry)?)?.to_string();
+            e.source = "git".into();
+            converted.insert(name.clone(), e);
+        }
     }
-    if !index.is_empty() {
-        run(&view, &["update-index", "-z", "--index-info"], Some(&index))?;
-    }
-    let pointer = path_argument(admin);
+    let tree = write_tree(&view, &converted)?;
+    let mut index = view.index()?;
+    index.read_tree(&view.find_tree(tree)?)?;
+    index.write()?;
     std::fs::write(
         checkout.join(".git"),
-        format!(
-            "gitdir: {}\n",
-            pointer.to_str().context("non-UTF8 build Git path")?
-        ),
+        format!("gitdir: {}\n", path_argument(admin).to_string_lossy()),
     )?;
+    drop(index);
+    drop(odb);
+    drop(config);
     Ok(view)
+}
+
+pub fn changed(view: &git2::Repository) -> Result<Vec<String>> {
+    let mut options = git2::DiffOptions::new();
+    options.ignore_submodules(true);
+    let diff = view.diff_index_to_workdir(None, Some(&mut options))?;
+    Ok(diff
+        .deltas()
+        .filter_map(|d| {
+            d.new_file()
+                .path()
+                .or(d.old_file().path())
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+        })
+        .collect())
 }
 
 /// Remove inherited Git-directory/index overrides before launching build tools.

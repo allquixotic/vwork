@@ -1,6 +1,6 @@
 [package]
 name = "vwork"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Compressed virtual workspaces and MCP tools for coding agents"
@@ -16,6 +16,8 @@ ctrlc = "3"
 dirs = "6"
 fs2 = "0.4"
 globset = "0.4"
+git2 = { version = "0.21", features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
+libgit2-sys = "0.18.8"
 im = { version = "15", features = ["serde"] }
 redb = "4.4"
 regex = "1"

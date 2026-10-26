@@ -111,6 +111,20 @@ pub fn serve(home: &Path) -> Result<()> {
     let stop = Arc::new(AtomicBool::new(false));
     let stopper = stop.clone();
     ctrlc::set_handler(move || stopper.store(true, Ordering::SeqCst))?;
+    let reaper_engine = engine.clone();
+    let reaper_stop = stop.clone();
+    let reaper = std::thread::spawn(move || {
+        let mut next = std::time::Instant::now();
+        while !reaper_stop.load(Ordering::SeqCst) {
+            if std::time::Instant::now() >= next {
+                if let Err(error) = reaper_engine.reap_temporary() {
+                    eprintln!("temporary cleanup: {error:#}");
+                }
+                next = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    });
     let active = Arc::new(AtomicUsize::new(0));
     let mut workers = Vec::new();
     while !stop.load(Ordering::SeqCst) {
@@ -181,6 +195,7 @@ pub fn serve(home: &Path) -> Result<()> {
     for worker in workers {
         let _ = worker.join();
     }
+    let _ = reaper.join();
     let _ = std::fs::remove_file(conn_path);
     drop(engine);
     FileExt::unlock(&lock)?;

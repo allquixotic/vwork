@@ -38,6 +38,7 @@ impl Fixture {
         git(&root, &["config", "user.email", "test@example.invalid"]);
         git(&root, &["add", "."]);
         git(&root, &["commit", "-m", "base"]);
+        git(&root, &["tag", "-a", "v9.8.7", "-m", "version"]);
         let engine = Engine::open(&home, Config::default()).unwrap();
         engine
             .call("repo_register", &json!({"repo":"repo","path":root}))
@@ -248,16 +249,11 @@ fn git_commit_isolation() -> Result<()> {
         "workspace_commit",
         &json!({"workspace":"one","expected_revision":f.head("one"),"message":"virtual change"}),
     )?;
-    assert_eq!(
-        git(
-            &f.root,
-            &[
-                "show",
-                &format!("{}:src/a.rs", out["commit"].as_str().unwrap())
-            ]
-        ),
-        "exported"
-    );
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"repo","workspace":"exported","reference":out["commit"]}),
+    )?;
+    assert_eq!(f.read("exported", "src/a.rs"), "exported");
     assert_eq!(git(&f.root, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read(f.root.join(".git/index"))?, index);
     assert!(git(&f.root, &["status", "--porcelain"]).is_empty());
@@ -283,7 +279,10 @@ fn managed_builds() -> Result<()> {
     assert_eq!(result["success"], true);
     assert_eq!(result["revision"], head);
     assert!(result["stdout"].as_str().unwrap().contains("build this"));
-    std::fs::write(f.home.join("build/repo/src/a.rs"), "native tool mutation")?;
+    std::fs::write(
+        PathBuf::from(result["checkout"].as_str().unwrap()).join("src/a.rs"),
+        "native tool mutation",
+    )?;
     let result = f.engine.call(
         "workspace_run_task",
         &json!({"workspace":"one","expected_revision":head,"task":"check"}),
@@ -489,6 +488,154 @@ fn v19_storage_sharing() -> Result<()> {
     assert_eq!(sharing["base_manifest_key"], "repository_id+commit");
     assert_eq!(sharing["edited_blob_scope"], "daemon");
     assert_eq!(sharing["remote_url_deduplication"], false);
+    Ok(())
+}
+
+#[test]
+fn v20_repository_setup() -> Result<()> {
+    let f = Fixture::new();
+    let tools = protocol::tools(true);
+    for name in ["vwork_repo_clone", "vwork_repo_register"] {
+        assert!(tools.iter().any(|t| t["name"] == name), "missing {name}");
+    }
+    for name in [
+        "vwork_task_set",
+        "vwork_package_configure",
+        "vwork_gc",
+        "shell",
+    ] {
+        assert!(!tools.iter().any(|t| t["name"] == name));
+    }
+    let config = std::fs::read(f.root.join(".git/config"))?;
+    let index = std::fs::read(f.root.join(".git/index"))?;
+    std::fs::write(f.root.join("README.md"), "uncommitted original content")?;
+    let register = protocol::mcp_response(
+        &json!({"id":1,"method":"tools/call",
+        "params":{"name":"vwork_repo_register","arguments":{"repo":"registered","path":f.root}}}),
+        Some("one"),
+        |op, a| f.engine.call(op, a),
+    )
+    .unwrap();
+    assert_eq!(register["result"]["isError"], false, "{register}");
+    let clone = protocol::mcp_response(
+        &json!({"id":2,"method":"tools/call",
+        "params":{"name":"vwork_repo_clone","arguments":{"repo":"cloned","source":f.root}}}),
+        Some("one"),
+        |op, a| f.engine.call(op, a),
+    )
+    .unwrap();
+    assert_eq!(clone["result"]["isError"], false, "{clone}");
+    let repo = f.engine.repo("cloned")?;
+    assert!(repo.stored);
+    assert!(repo.path.as_os_str().is_empty());
+    assert!(repo.git_dir.as_os_str().is_empty());
+    assert!(!f.home.join("repos").exists());
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"cloned","workspace":"cloned-one"}),
+    )?;
+    assert_eq!(f.read("cloned-one", "README.md"), "base");
+    f.write("cloned-one", "README.md", "virtual edit");
+    f.engine.call(
+        "task_set",
+        &json!({"repo":"cloned","name":"git-head",
+        "program":"git","args":["rev-parse","HEAD"],"timeout_seconds":10}),
+    )?;
+    let built = f.engine.call(
+        "workspace_run_task",
+        &json!({"workspace":"cloned-one",
+        "expected_revision":f.head("cloned-one"),"task":"git-head"}),
+    )?;
+    assert_eq!(built["success"], true, "{built}");
+    assert_eq!(
+        built["stdout"].as_str().unwrap().trim(),
+        git(&f.root, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.root.join("README.md"))?,
+        "uncommitted original content"
+    );
+    assert_eq!(std::fs::read(f.root.join(".git/config"))?, config);
+    assert_eq!(std::fs::read(f.root.join(".git/index"))?, index);
+    assert!(
+        f.engine
+            .call(
+                "workspace_export",
+                &json!({"workspace":"cloned-one","destination":repo.path})
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn v20_clone_failure_preserves_paths() -> Result<()> {
+    let f = Fixture::new();
+    for source in [
+        "--upload-pack=bad",
+        "ext::bad",
+        "https://name:secret@example.invalid/repo",
+        "https://example.invalid/repo?token=secret",
+    ] {
+        assert!(
+            f.engine
+                .call("repo_clone", &json!({"repo":"bad","source":source}))
+                .is_err()
+        );
+        assert!(!f.home.join("repos/bad.git").exists());
+    }
+    let occupied = f.home.join("repos/occupied.git");
+    std::fs::create_dir_all(&occupied)?;
+    std::fs::write(occupied.join("keep.txt"), "do not overwrite")?;
+    f.engine
+        .call("repo_clone", &json!({"repo":"occupied","source":f.root}))?;
+    assert!(
+        f.engine
+            .call("repo_clone", &json!({"repo":"occupied","source":f.root}))
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(occupied.join("keep.txt"))?,
+        "do not overwrite"
+    );
+    let result = f.engine.call(
+        "repo_clone",
+        &json!({"repo":"failed","source":f._temp.path().join("missing")}),
+    );
+    assert!(result.is_err());
+    assert!(f.engine.repo("failed").is_err());
+    assert!(
+        !f.home.join("repos/failed.git").exists(),
+        "only the owned partial clone is removed"
+    );
+    Ok(())
+}
+
+#[test]
+fn v20_registration_is_atomic() -> Result<()> {
+    let f = Fixture::new();
+    let engine = Arc::new(f.engine);
+    let barrier = Arc::new(std::sync::Barrier::new(6));
+    let mut handles = Vec::new();
+    for _ in 0..6 {
+        let engine = engine.clone();
+        let barrier = barrier.clone();
+        let root = f.root.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            engine
+                .call("repo_register", &json!({"repo":"contended","path":root}))
+                .is_ok()
+        }));
+    }
+    assert_eq!(
+        handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|ok| *ok)
+            .count(),
+        1
+    );
     Ok(())
 }
 #[test]
@@ -752,14 +899,12 @@ fn export_retention() -> Result<()> {
         .call("export_forget", &json!({"repo":"repo","revision":revision}))?;
     f.engine.call("gc", &json!({}))?;
     assert_eq!(f.engine.call("stats", &json!({}))?["blobs"], 0);
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"repo","workspace":"retained","reference":commit["commit"]}),
+    )?;
     assert_eq!(
-        git(
-            &f.root,
-            &[
-                "show",
-                &format!("{}:retained", commit["commit"].as_str().unwrap())
-            ]
-        ),
+        f.read("retained", "retained"),
         "export survives workspace drop"
     );
     Ok(())
@@ -793,7 +938,6 @@ fn git_path_arguments() {
 #[test]
 fn build_git_metadata() -> Result<()> {
     let f = Fixture::new();
-    git(&f.root, &["tag", "-a", "v9.8.7", "-m", "version"]);
     let original_head = git(&f.root, &["rev-parse", "HEAD"]);
     let original_index = std::fs::read(f.root.join(".git/index"))?;
     let object_files = || {
@@ -828,13 +972,13 @@ fn build_git_metadata() -> Result<()> {
         &json!({"workspace":"one","expected_revision":f.head("one"),"task":"head"}),
     )?;
     assert_eq!(head["stdout"].as_str().unwrap().trim(), original_head);
-    let build = f.home.join("build/repo");
+    let build = PathBuf::from(head["checkout"].as_str().unwrap());
     assert!(build.join(".git").is_file());
     assert_eq!(git(&build, &["show", ":new-file"]), "virtual addition");
     assert!(
-        f.home
-            .join("build-git/repo/objects/info/alternates")
-            .is_file()
+        !PathBuf::from(head["git_dir"].as_str().unwrap())
+            .join("objects/info/alternates")
+            .exists()
     );
     assert_eq!(git(&f.root, &["rev-parse", "HEAD"]), original_head);
     assert_eq!(std::fs::read(f.root.join(".git/index"))?, original_index);
@@ -927,7 +1071,11 @@ fn package_workflows() -> Result<()> {
     let result = package_run(&f, "rust", "test")?;
     assert_eq!(result["success"], true, "{result}");
     assert_eq!(result["source_changes"], json!([]));
-    assert!(f.home.join("targets/repo/rust").is_dir());
+    let target = PathBuf::from(result["checkout"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .join("targets/repo/rust");
+    assert!(target.is_dir());
     assert!(!f.root.join("rust").exists());
     assert!(
         f.engine.call("package_list", &json!({"repo":"repo"}))?["projects"]
@@ -938,7 +1086,7 @@ fn package_workflows() -> Result<()> {
     );
     let result = package_run(&f, "rust", "clean")?;
     assert_eq!(result["success"], true);
-    assert!(!f.home.join("targets/repo/rust").exists());
+    assert!(!target.exists());
     Ok(())
 }
 
@@ -1000,7 +1148,7 @@ fn package_input_changes() -> Result<()> {
     assert_eq!(install["success"], true, "{install}");
     let check = package_run(&f, "py", "check")?;
     assert_eq!(check["success"], true, "{check}");
-    let venv = f.home.join("environments/repo/py");
+    let venv = PathBuf::from(install["package"]["environment"].as_str().unwrap());
     let python = vwork::packages::python_executable(&venv);
     assert!(python.is_file());
     assert!(!std::fs::symlink_metadata(&python)?.file_type().is_symlink());
@@ -1017,5 +1165,416 @@ fn package_input_changes() -> Result<()> {
     let clean = package_run(&f, "py", "clean")?;
     assert_eq!(clean["success"], true);
     assert!(!venv.exists());
+    Ok(())
+}
+
+#[test]
+fn v21_redb_owns_git() -> Result<()> {
+    let f = Fixture::new();
+    let original = git(&f.root, &["rev-parse", "HEAD"]);
+    let hidden = f._temp.path().join("removed-source");
+    std::fs::rename(&f.root, &hidden)?;
+    assert_eq!(f.read("one", "README.md"), "base");
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"repo","workspace":"independent","reference":"main"}),
+    )?;
+    assert!(
+        f.engine.call("repo_log", &json!({"repo":"repo"}))?["log"]
+            .as_str()
+            .unwrap()
+            .contains(&original)
+    );
+    f.write("one", "README.md", "owned by redb");
+    let commit = f.engine.call(
+        "workspace_commit",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"message":"database commit"}),
+    )?;
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"repo","workspace":"committed","reference":commit["commit"]}),
+    )?;
+    assert_eq!(f.read("committed", "README.md"), "owned by redb");
+    assert!(!f.home.join("repos").exists());
+    let Fixture {
+        engine,
+        home,
+        _temp,
+        ..
+    } = f;
+    drop(engine);
+    let reopened = Engine::open(home, Config::default())?;
+    assert_eq!(
+        reopened.call(
+            "files_read",
+            &json!({"workspace":"committed","path":"README.md"})
+        )?["content"],
+        "owned by redb"
+    );
+    Ok(())
+}
+
+#[test]
+fn v22_temporary_lifecycle() -> Result<()> {
+    let f = Fixture::new();
+    let lease = f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"filesystem-only test","ttl_seconds":60}))?;
+    let root = PathBuf::from(lease["path"].as_str().unwrap());
+    assert!(root.join("README.md").is_file());
+    assert_eq!(
+        git(&root, &["rev-parse", "HEAD"]),
+        git(&f.root, &["rev-parse", "HEAD"])
+    );
+    let renewed = f.engine.call(
+        "temporary_renew",
+        &json!({"lease":lease["id"],"ttl_seconds":120}),
+    )?;
+    assert!(renewed["expires_at"].as_u64() >= lease["expires_at"].as_u64());
+    let released = f
+        .engine
+        .call("temporary_release", &json!({"lease":lease["id"]}))?;
+    assert_eq!(released["released"], true);
+    assert!(!root.exists());
+    assert_eq!(
+        f.engine.call("temporary_list", &json!({}))?["active"],
+        json!([])
+    );
+    Ok(())
+}
+
+#[test]
+fn v22_temporary_recovery() -> Result<()> {
+    let f = Fixture::new();
+    let lease = f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"edit with external tool","ttl_seconds":1}))?;
+    let root = PathBuf::from(lease["path"].as_str().unwrap());
+    std::fs::write(root.join("README.md"), "recover this edit")?;
+    std::fs::write(root.join("new.txt"), "recover new file")?;
+    let Fixture {
+        engine,
+        home,
+        _temp,
+        ..
+    } = f;
+    drop(engine);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let reopened = Engine::open(home, Config::default())?;
+    assert!(!root.exists(), "expired copies are reclaimed after restart");
+    let history = reopened.call("temporary_list", &json!({}))?;
+    let recovery = &history["recent"][0]["recovery_workspace"];
+    assert!(recovery.is_string(), "{history}");
+    assert_eq!(
+        reopened.call(
+            "files_read",
+            &json!({"workspace":recovery,"path":"README.md"})
+        )?["content"],
+        "recover this edit"
+    );
+    assert_eq!(
+        reopened.call(
+            "files_read",
+            &json!({"workspace":recovery,"path":"new.txt"})
+        )?["content"],
+        "recover new file"
+    );
+    assert_eq!(
+        reopened.call("files_read", &json!({"workspace":"one","path":"README.md"}))?["content"],
+        "base"
+    );
+    Ok(())
+}
+
+#[test]
+fn v22_cleanup_ownership() -> Result<()> {
+    let f = Fixture::new();
+    let lease = f.engine.call(
+        "workspace_temporary",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"ownership test"}),
+    )?;
+    let tree = PathBuf::from(lease["path"].as_str().unwrap());
+    let marker = tree.parent().unwrap().join("owner");
+    std::fs::write(&marker, "not owned")?;
+    assert!(
+        f.engine
+            .call("temporary_release", &json!({"lease":lease["id"]}))
+            .is_err()
+    );
+    assert!(tree.join("README.md").exists());
+    assert!(
+        f.engine
+            .call("temporary_release", &json!({"lease":"../escape"}))
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn v23_uv_cdk_plans() -> Result<()> {
+    use vwork::packages::{Project, Step, plan};
+    let temp = tempfile::tempdir()?;
+    let checkout = temp.path().join("tree");
+    let tree = vwork::model::Tree::new();
+    let uv: Project =
+        serde_json::from_value(json!({"repo":"r","name":"python","manager":"uv","offline":true}))?;
+    let sync = plan(&uv, "install", temp.path(), &checkout, &tree, false)?;
+    assert!(sync.environment.as_ref().unwrap().starts_with(temp.path()));
+    assert!(sync.env["UV_CACHE_DIR"].contains(temp.path().file_name().unwrap().to_str().unwrap()));
+    assert_eq!(sync.env["UV_OFFLINE"], "true");
+    assert!(matches!(&sync.steps[0], Step::Command { args, .. } if args[0] == "sync"));
+    assert!(plan(&uv, "test", temp.path(), &checkout, &tree, false).is_err());
+    let cdk: Project = serde_json::from_value(json!({"repo":"r","name":"infra","manager":"cdk"}))?;
+    let synth = plan(&cdk, "synth", temp.path(), &checkout, &tree, false)?;
+    assert!(
+        matches!(&synth.steps[0], Step::Command { args, .. } if args.contains(&"--no-lookups".to_string()) && args.contains(&"--output".to_string()))
+    );
+    for action in ["deploy", "destroy", "bootstrap", "watch", "publish-assets"] {
+        assert!(plan(&cdk, action, temp.path(), &checkout, &tree, false).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn v21_legacy_migration() -> Result<()> {
+    use redb::{Database, ReadableTable, TableDefinition};
+    let f = Fixture::new();
+    f.write("one", "README.md", "legacy edit");
+    let original_index = std::fs::read(f.root.join(".git/index"))?;
+    let Fixture {
+        engine,
+        home,
+        root,
+        _temp,
+    } = f;
+    drop(engine);
+    let db = Database::create(home.join("workspaces.redb"))?;
+    let tx = db.begin_write()?;
+    {
+        let mut table = tx.open_table(TableDefinition::<&str, &[u8]>::new("records_v1"))?;
+        let mut repo: Value = serde_json::from_slice(table.get("r/repo")?.unwrap().value())?;
+        for key in ["stored", "refs", "author_name", "author_email"] {
+            repo.as_object_mut().unwrap().remove(key);
+        }
+        table.insert("r/repo", serde_json::to_vec(&repo)?.as_slice())?;
+        table.insert("schema", b"1".as_slice())?;
+    }
+    tx.delete_table(vwork::git_store::OBJECTS)?;
+    tx.delete_table(vwork::git_store::MEMBERS)?;
+    tx.commit()?;
+    drop(db);
+    let reopened = Engine::open(&home, Config::default())?;
+    assert!(reopened.repo("repo")?.stored);
+    std::fs::rename(&root, _temp.path().join("source-gone"))?;
+    assert_eq!(
+        reopened.call("files_read", &json!({"workspace":"one","path":"README.md"}))?["content"],
+        "legacy edit"
+    );
+    assert_eq!(
+        reopened.call("files_read", &json!({"workspace":"one","path":"src/a.rs"}))?["content"],
+        "fn alpha() {}"
+    );
+    assert_eq!(
+        std::fs::read(_temp.path().join("source-gone/.git/index"))?,
+        original_index
+    );
+    Ok(())
+}
+
+#[test]
+fn v22_temporary_bounds_and_active_job() -> Result<()> {
+    let f = Fixture::new();
+    let mut leases = Vec::new();
+    for _ in 0..f.engine.config.max_temporary_copies {
+        leases.push(f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"bounded fixture"}))?);
+    }
+    assert!(
+        f.engine
+            .call(
+                "workspace_temporary",
+                &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"too many"})
+            )
+            .is_err()
+    );
+    assert!(
+        f.engine
+            .call(
+                "temporary_renew",
+                &json!({"lease":leases[0]["id"],"ttl_seconds":86401})
+            )
+            .is_err()
+    );
+    for lease in leases {
+        f.engine
+            .call("temporary_release", &json!({"lease":lease["id"]}))?;
+    }
+    #[cfg(windows)]
+    let (program, args) = ("cmd", vec!["/C", "ping -n 4 127.0.0.1 >NUL"]);
+    #[cfg(unix)]
+    let (program, args) = ("/bin/sh", vec!["-c", "sleep 3"]);
+    f.engine.call(
+        "task_set",
+        &json!({"repo":"repo","name":"busy","program":program,"args":args}),
+    )?;
+    let head = f.head("one");
+    let engine = Arc::new(f.engine);
+    let worker = engine.clone();
+    let job = std::thread::spawn(move || {
+        worker.call(
+            "workspace_run_task",
+            &json!({"workspace":"one","expected_revision":head,"task":"busy"}),
+        )
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let lease = loop {
+        let active = engine.call("temporary_list", &json!({}))?;
+        if active["active"][0]["state"] == "ready" {
+            break active["active"][0].clone();
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(
+        engine
+            .call("temporary_release", &json!({"lease":lease["id"]}))
+            .is_err()
+    );
+    engine.reap_temporary()?;
+    assert!(PathBuf::from(lease["path"].as_str().unwrap()).exists());
+    assert_eq!(job.join().unwrap()?["success"], true);
+    engine.call("temporary_release", &json!({"lease":lease["id"]}))?;
+    Ok(())
+}
+
+#[test]
+fn v22_legacy_build_cleanup() -> Result<()> {
+    let f = Fixture::new();
+    let workspace = f.engine.workspace("one")?;
+    let (_, tree) = f.engine.snapshot(&workspace)?;
+    let legacy = f.home.join("build/repo");
+    f.engine.materialize(&workspace, &tree, &legacy)?;
+    std::fs::write(legacy.join("README.md"), "old build edit")?;
+    std::fs::create_dir_all(f.home.join("targets/repo/rust"))?;
+    std::fs::write(f.home.join("targets/repo/rust/disposable"), "cache")?;
+    let Fixture {
+        engine,
+        home,
+        _temp,
+        ..
+    } = f;
+    drop(engine);
+    let reopened = Engine::open(&home, Config::default())?;
+    assert!(!legacy.exists());
+    assert!(!home.join("targets/repo").exists());
+    let recent = reopened.call("temporary_list", &json!({}))?;
+    let recovered = &recent["recent"][0]["recovery_workspace"];
+    assert!(recovered.is_string(), "{recent}");
+    assert_eq!(
+        reopened.call(
+            "files_read",
+            &json!({"workspace":recovered,"path":"README.md"})
+        )?["content"],
+        "old build edit"
+    );
+    Ok(())
+}
+
+#[test]
+fn v23_uv_cdk_execution() -> Result<()> {
+    // Full CLI execution is enabled in CI, where uv and CDK are provisioned.
+    if std::env::var_os("VWORK_TEST_PACKAGE_TOOLS").is_none() {
+        return Ok(());
+    }
+    let f = Fixture::new();
+    f.write("one", "python/pyproject.toml", "[project]\nname='vwork-uv-fixture'\nversion='0.1.0'\nrequires-python='>=3.10'\ndependencies=[]\n[tool.uv]\npackage=false\n");
+    f.engine.call("package_configure", &json!({"repo":"repo","name":"uv","manager":"uv","path":"python","offline":true,"env":{"UV_PYTHON_DOWNLOADS":"never"}}))?;
+    let install = package_run(&f, "uv", "install")?;
+    assert_eq!(install["success"], true, "{install}");
+    assert!(PathBuf::from(install["package"]["environment"].as_str().unwrap()).is_dir());
+    f.engine.call("workspace_import", &json!({"workspace":"one","expected_revision":f.head("one"),"source":install["checkout"],"paths":["python/uv.lock"]}))?;
+    let check = package_run(&f, "uv", "check")?;
+    assert_eq!(check["success"], true, "{check}");
+    f.write("one", "infra/cdk.json", r#"{"app":"node app.cjs"}"#);
+    f.write("one", "infra/app.cjs", r#"const fs=require('fs'),p=require('path'),d=process.env.CDK_OUTDIR;fs.mkdirSync(d,{recursive:true});fs.writeFileSync(p.join(d,'Fixture.template.json'),JSON.stringify({Resources:{}}));fs.writeFileSync(p.join(d,'manifest.json'),JSON.stringify({version:'36.0.0',artifacts:{Fixture:{type:'aws:cloudformation:stack',environment:'aws://unknown-account/unknown-region',properties:{templateFile:'Fixture.template.json'}}}}));"#);
+    f.engine.call(
+        "package_configure",
+        &json!({"repo":"repo","name":"infra","manager":"cdk","path":"infra"}),
+    )?;
+    let synth = package_run(&f, "infra", "synth")?;
+    assert_eq!(synth["success"], true, "{synth}");
+    let artifacts = PathBuf::from(synth["package"]["artifacts"].as_str().unwrap());
+    assert!(artifacts.join("Fixture.template.json").is_file());
+    let list = package_run(&f, "infra", "list")?;
+    assert_eq!(list["success"], true, "{list}");
+    assert!(list["stdout"].as_str().unwrap().contains("Fixture"));
+    let root = PathBuf::from(synth["checkout"].as_str().unwrap());
+    f.engine.call(
+        "temporary_release",
+        &json!({"lease":synth["temporary"]["id"]}),
+    )?;
+    assert!(!root.exists());
+    assert!(!artifacts.exists());
+    assert!(
+        package_run(&f, "uv", "check").is_err(),
+        "released environment cannot remain installed"
+    );
+    Ok(())
+}
+
+#[test]
+fn v21_clone_transport() -> Result<()> {
+    let f = Fixture::new();
+    let path = vwork::git::path_argument(&f.root)
+        .to_string_lossy()
+        .replace(' ', "%20");
+    let source = format!("file://{}{}", if cfg!(windows) { "/" } else { "" }, path);
+    let before = f.engine.call("storage_info", &json!({}))?;
+    let result = f
+        .engine
+        .call("repo_clone", &json!({"repo":"transport","source":source}))?;
+    assert_eq!(result["storage"], "redb");
+    assert_eq!(
+        f.engine.call("storage_info", &json!({}))?["git_objects"],
+        before["git_objects"]
+    );
+    assert_eq!(
+        f.engine.call("temporary_list", &json!({}))?["transfers"],
+        json!([])
+    );
+    assert!(
+        std::fs::read_dir(f.home.join("transfers"))?
+            .next()
+            .is_none()
+    );
+    std::fs::rename(&f.root, f._temp.path().join("source-removed"))?;
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"transport","workspace":"transported"}),
+    )?;
+    assert_eq!(f.read("transported", "README.md"), "base");
+    Ok(())
+}
+
+#[test]
+fn v22_recovery_limit_preserves_copy() -> Result<()> {
+    let mut f = Fixture::new();
+    f.engine.config.max_recovery_bytes = 1;
+    let lease = f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"recovery limit fixture"}))?;
+    let root = PathBuf::from(lease["path"].as_str().unwrap());
+    std::fs::write(root.join("README.md"), "keep me")?;
+    assert!(
+        f.engine
+            .call("temporary_release", &json!({"lease":lease["id"]}))
+            .is_err()
+    );
+    assert!(root.exists());
+    assert!(
+        f.engine.call("temporary_list", &json!({}))?["active"][0]["cleanup_error"]
+            .as_str()
+            .unwrap()
+            .contains("recovery limit")
+    );
+    f.engine.call(
+        "temporary_release",
+        &json!({"lease":lease["id"],"discard_changes":true}),
+    )?;
+    assert!(!root.exists());
+    assert_eq!(f.read("one", "README.md"), "base");
     Ok(())
 }
