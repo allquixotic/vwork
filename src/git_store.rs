@@ -81,6 +81,14 @@ pub(crate) fn write_record(
     Ok(())
 }
 
+pub fn contains(db: &Database, repo: &str, oid: Oid) -> Result<bool> {
+    let tx = db.begin_read()?;
+    Ok(tx
+        .open_table(MEMBERS)?
+        .get(format!("{repo}/{oid}").as_str())?
+        .is_some())
+}
+
 pub fn members(db: &Database, repo: &str) -> Result<Vec<Oid>> {
     let prefix = format!("{repo}/");
     let tx = db.begin_read()?;
@@ -135,8 +143,8 @@ extern "C" fn read_cb(
         let id = unsafe { Oid::from_raw(oid) };
         let tx = b.db.begin_read()?;
         if tx
-            .open_table(OBJECTS)?
-            .get(id.to_string().as_str())?
+            .open_table(MEMBERS)?
+            .get(format!("{}/{id}", b.repo).as_str())?
             .is_none()
         {
             return Ok(raw::GIT_ENOTFOUND);
@@ -164,6 +172,13 @@ extern "C" fn header_cb(
         let b = unsafe { &*(backend as *const Backend) };
         let id = unsafe { Oid::from_raw(oid) };
         let tx = b.db.begin_read()?;
+        if tx
+            .open_table(MEMBERS)?
+            .get(format!("{}/{id}", b.repo).as_str())?
+            .is_none()
+        {
+            return Ok(raw::GIT_ENOTFOUND);
+        }
         let table = tx.open_table(OBJECTS)?;
         let Some(value) = table.get(id.to_string().as_str())? else {
             return Ok(raw::GIT_ENOTFOUND);
@@ -183,8 +198,8 @@ extern "C" fn exists_cb(backend: *mut raw::git_odb_backend, oid: *const raw::git
         let id = unsafe { Oid::from_raw(oid) };
         let tx = b.db.begin_read()?;
         Ok(i32::from(
-            tx.open_table(OBJECTS)?
-                .get(id.to_string().as_str())?
+            tx.open_table(MEMBERS)?
+                .get(format!("{}/{id}", b.repo).as_str())?
                 .is_some(),
         ))
     })

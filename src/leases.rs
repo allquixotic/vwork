@@ -506,7 +506,7 @@ impl Engine {
             .map_err(|_| anyhow::anyhow!("repository job is active; retry after it finishes"))?;
         if op == "temporary_renew" {
             ensure!(lease.state == "ready", "temporary copy is not ready");
-            lease.expires_at = now().saturating_add(self.ttl(args)?);
+            lease.expires_at = lease.expires_at.max(now().saturating_add(self.ttl(args)?));
             self.lease_save(&lease)?;
             return Ok(self.lease_value(&lease));
         }

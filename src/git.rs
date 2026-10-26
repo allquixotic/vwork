@@ -270,13 +270,22 @@ pub fn tree(db: &Arc<Database>, repo: &Repository, commit: &str) -> Result<Tree>
 
 pub struct Reader {
     db: Arc<Database>,
+    repo: String,
 }
 impl Reader {
-    pub fn new(db: &Arc<Database>) -> Result<Self> {
-        Ok(Self { db: db.clone() })
+    pub fn new(db: &Arc<Database>, repo: &str) -> Result<Self> {
+        Ok(Self {
+            db: db.clone(),
+            repo: repo.into(),
+        })
     }
     pub fn blob(&mut self, oid: &str, limit: usize) -> Result<Vec<u8>> {
-        let (kind, bytes) = git_store::read(&self.db, Oid::from_str(oid)?)?;
+        let oid = Oid::from_str(oid)?;
+        ensure!(
+            git_store::contains(&self.db, &self.repo, oid)?,
+            "Git object does not belong to repository"
+        );
+        let (kind, bytes) = git_store::read(&self.db, oid)?;
         ensure!(
             kind == ObjectType::Blob && bytes.len() <= limit,
             "not a blob or exceeds max_file_bytes"

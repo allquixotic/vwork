@@ -211,7 +211,7 @@ impl Engine {
 
     pub(crate) fn bytes(
         &self,
-        _repo: &Repository,
+        repo: &Repository,
         e: &Entry,
         reader: &mut Option<git::Reader>,
     ) -> Result<Vec<u8>> {
@@ -225,7 +225,7 @@ impl Engine {
         );
         if e.source == "git" {
             if reader.is_none() {
-                *reader = Some(git::Reader::new(&self.db)?);
+                *reader = Some(git::Reader::new(&self.db, &repo.id)?);
             }
             return reader
                 .as_mut()
@@ -1709,7 +1709,9 @@ impl Engine {
         }
         let run_id = id();
         let mut result = json!({"run":run_id,"workspace":ws.id,"revision":ws.head,"base_commit":revision.base,"task":name,"success":output.success,"exit_code":output.exit_code,"timed_out":output.timed_out,"stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"stdout_truncated":output.stdout_truncated,"stderr_truncated":output.stderr_truncated,"checkout":packages::process_path(&dest),"git_dir":packages::process_path(&admin),"timestamp":now()});
-        lease.expires_at = now().saturating_add(self.config.temporary_ttl_seconds);
+        lease.expires_at = lease
+            .expires_at
+            .max(now().saturating_add(self.config.temporary_ttl_seconds));
         self.lease_save(&lease)?;
         result["temporary"] = self.lease_value(&lease);
         result["recovery_workspace"] = json!(recovery_workspace);

@@ -1242,7 +1242,7 @@ fn v22_temporary_lifecycle() -> Result<()> {
         "temporary_renew",
         &json!({"lease":lease["id"],"ttl_seconds":120}),
     )?;
-    assert!(renewed["expires_at"].as_u64() >= lease["expires_at"].as_u64());
+    assert!(renewed["expires_at"].as_u64() >= run["temporary"]["expires_at"].as_u64());
     let released = f
         .engine
         .call("temporary_release", &json!({"lease":lease["id"]}))?;
@@ -1630,6 +1630,46 @@ fn v21_import_batches() -> Result<()> {
             .as_u64()
             .unwrap()
             > 300
+    );
+    Ok(())
+}
+
+#[test]
+fn v21_shared_objects_keep_repository_membership() -> Result<()> {
+    let f = Fixture::new();
+    let other_path = f._temp.path().join("other");
+    let other = git2::Repository::init(&other_path)?;
+    let bytes = b"content shared between independent repositories\n";
+    let blob = other.blob(bytes)?;
+    let tree = {
+        let mut t = other.treebuilder(None)?;
+        t.insert("other.txt", blob, 0o100644)?;
+        t.write()?
+    };
+    let sig = git2::Signature::now("Other", "other@example.invalid")?;
+    let other_commit = other.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        "unrelated",
+        &other.find_tree(tree)?,
+        &[],
+    )?;
+    f.engine
+        .call("repo_register", &json!({"repo":"other","path":other_path}))?;
+    assert!(f.engine.call("workspace_create", &json!({"repo":"repo","workspace":"wrong-repo","reference":other_commit.to_string()})).is_err(), "a globally stored object does not make an unrelated commit part of this repo");
+    f.write("one", "README.md", std::str::from_utf8(bytes)?);
+    let commit = f.engine.call("workspace_commit", &json!({"workspace":"one","expected_revision":f.head("one"),"message":"reuse existing shared blob"}))?;
+    let lease = f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"verify shared object membership"}))?;
+    assert_eq!(
+        git(
+            std::path::Path::new(lease["path"].as_str().unwrap()),
+            &[
+                "show",
+                &format!("{}:README.md", commit["commit"].as_str().unwrap())
+            ]
+        ),
+        std::str::from_utf8(bytes)?.trim()
     );
     Ok(())
 }
