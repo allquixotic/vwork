@@ -169,6 +169,14 @@ pub fn python_executable(venv: &Path) -> PathBuf {
     }
 }
 
+/// External tools can reject Windows NT verbatim paths (notably pip's venv checks).
+/// Keep canonical paths for our own IO, but pass standard absolute paths to tools.
+pub fn process_path(path: &Path) -> String {
+    crate::git::path_argument(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Dependency inputs include absent lockfiles so creation/deletion changes the fingerprint.
 pub fn fingerprint(
     project: &Project,
@@ -275,7 +283,7 @@ pub fn plan(
         Manager::Cargo => {
             let target = home.join("targets").join(&project.repo).join(&project.name);
             plan.env
-                .insert("CARGO_TARGET_DIR".into(), target.to_string_lossy().into());
+                .insert("CARGO_TARGET_DIR".into(), process_path(&target));
             if action == "clean" {
                 plan.steps.push(Step::Remove(target));
                 return Ok(plan);
@@ -317,7 +325,7 @@ pub fn plan(
                         "-m".into(),
                         "venv".into(),
                         "--copies".into(),
-                        venv.to_string_lossy().into(),
+                        process_path(&venv),
                     ]);
                     plan.steps.push(Step::Command { program, args });
                 }
@@ -327,8 +335,7 @@ pub fn plan(
                     "Python environment is not prepared for these inputs; run package install first"
                 );
             }
-            plan.env
-                .insert("VIRTUAL_ENV".into(), venv.to_string_lossy().into());
+            plan.env.insert("VIRTUAL_ENV".into(), process_path(&venv));
             plan.env.insert("PYTHONNOUSERSITE".into(), "1".into());
             plan.env
                 .insert("PIP_REQUIRE_VIRTUALENV".into(), "true".into());
@@ -344,8 +351,8 @@ pub fn plan(
                 .map(std::ffi::OsString::from)
                 .or_else(|| std::env::var_os("PATH"))
                 .unwrap_or_default();
-            let paths =
-                std::iter::once(scripts.to_path_buf()).chain(std::env::split_paths(&original));
+            let paths = std::iter::once(PathBuf::from(process_path(scripts)))
+                .chain(std::env::split_paths(&original));
             plan.env.insert(
                 "PATH".into(),
                 std::env::join_paths(paths)?.to_string_lossy().into(),
@@ -377,13 +384,13 @@ pub fn plan(
                     "wheel".into(),
                     "--no-deps".into(),
                     "--wheel-dir".into(),
-                    plan.artifacts.to_string_lossy().into(),
+                    process_path(&plan.artifacts),
                     ".".into(),
                 ]),
                 _ => unreachable!(),
             }
             plan.steps.push(Step::Command {
-                program: python.to_string_lossy().into(),
+                program: process_path(&python),
                 args: pip,
             });
         }

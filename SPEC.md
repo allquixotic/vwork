@@ -32,6 +32,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V12: Package actions serialize with builds; npm dependencies and pip environments require matching inputs; Cargo targets are per project. Tests `package_workflows`, `package_input_changes`.
 - V13: Package-generated manifest/lock edits are reported for explicit import; virtual source never changes implicitly. Test `package_writeback`.
 - V14: Build source-change reports compare content against the virtual index; a rebuilt stat cache alone never marks files changed. Tests `build_git_metadata`, `package_workflows`.
+- V15: Package-tool path arguments and environment values use standard absolute paths; Windows NT verbatim prefixes stay internal. Tests `package_process_paths`, `package_input_changes`.
 
 # §T
 id|status|task|cites
@@ -43,7 +44,7 @@ T4|x|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V
 
 T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
 T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
-T7|~|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,I.release
+T7|~|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
 
 # §B
 id|date|cause|fix
@@ -55,3 +56,5 @@ B4|2026-10-26|Git for Windows rejects Rust canonical verbatim paths|Normalize on
 B5|2026-10-26|HTTP client's default configuration inherits proxy environment and prefix checks do not validate URL authority|Disable proxies for loopback RPC and parse exact SocketAddr; daemon test covers bad proxy and userinfo URL
 B6|2026-10-26|Mac's standalone Python copied executable cannot locate libpython even with direct venv --copies|Select a compatible installed interpreter through project program and VWORK_TEST_PYTHON; document prerequisite
 B7|2026-10-26|Git diff-files reports empty stat-cache entries as changed after private index reconstruction|Use content-aware git diff, disable external diff/textconv, assert unchanged report (V14)
+B8|2026-10-26|Windows Python ensurepip rejects the NT verbatim environment path passed by Rust|Normalize package-tool path arguments and environment values while retaining canonical paths for internal IO (V15)
+B9|2026-10-26|Regression fixture's generic im map left string conversion ambiguous|Use explicit String constructor; V15 fixture retained

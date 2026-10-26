@@ -3,7 +3,7 @@
 ## 0.2.0
 
 Local validation on 2026-10-26 uses the same Apple Silicon Mac and stable Rust
-toolchain described below. The full suite passes **24 integration tests**,
+toolchain described below. The full suite passes **25 integration tests**,
 including real offline npm, Cargo and pip fixtures. Formatting and strict Clippy
 also pass.
 
@@ -15,7 +15,8 @@ checks the managed target directory. `package_writeback` installs an npm fixture
 imports its generated lockfile, runs a Node script and checks invalidation.
 `package_input_changes` creates a copied Python venv, installs empty offline
 requirements, runs pip check, recreates the environment after input changes and
-cleans it. Protocol tests keep package configuration outside model tools.
+cleans it. `package_process_paths` checks that tool-facing Windows paths omit NT
+verbatim prefixes. Protocol tests keep package configuration outside model tools.
 
 The Mac test command selects an installed Python compatible with copied venvs:
 

@@ -719,6 +719,49 @@ fn package_run(f: &Fixture, project: &str, action: &str) -> Result<Value> {
 }
 
 #[test]
+fn package_process_paths() -> Result<()> {
+    let project: vwork::packages::Project = serde_json::from_value(json!({
+        "repo":"repo", "name":"py", "manager":"pip"
+    }))?;
+    #[cfg(windows)]
+    let home = PathBuf::from(r"\\?\C:\state with spaces");
+    #[cfg(not(windows))]
+    let home = PathBuf::from("/state with spaces");
+    let plan = vwork::packages::plan(
+        &project,
+        "install",
+        &home,
+        &home.join("checkout"),
+        &[(
+            String::from("requirements.txt"),
+            vwork::model::Entry {
+                source: "git".into(),
+                oid: "unused".into(),
+                mode: "100644".into(),
+                size: 0,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        false,
+    )?;
+    for step in &plan.steps {
+        if let vwork::packages::Step::Command { program, args } = step {
+            assert!(!program.contains(r"\\?\"));
+            assert!(!args.iter().any(|a| a.contains(r"\\?\")));
+        }
+    }
+    assert!(!plan.env["VIRTUAL_ENV"].contains(r"\\?\"));
+    assert!(!plan.env["PATH"].starts_with(r"\\?\"));
+    #[cfg(windows)]
+    assert_eq!(
+        plan.env["VIRTUAL_ENV"],
+        "C:/state with spaces/environments/repo/py"
+    );
+    Ok(())
+}
+
+#[test]
 fn package_workflows() -> Result<()> {
     let f = Fixture::new();
     f.write(

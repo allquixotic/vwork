@@ -1430,8 +1430,8 @@ impl Engine {
         env.insert("VWORK_WORKSPACE".into(), ws.id.clone());
         env.insert("VWORK_REVISION".into(), ws.head.clone());
         env.insert("VWORK_BASE_COMMIT".into(), revision.base.clone());
-        env.insert("VWORK_BUILD_ROOT".into(), dest.to_string_lossy().into());
-        env.insert("VWORK_GIT_DIR".into(), admin.to_string_lossy().into());
+        env.insert("VWORK_BUILD_ROOT".into(), packages::process_path(&dest));
+        env.insert("VWORK_GIT_DIR".into(), packages::process_path(&admin));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let mut output = ProcessOutput::default();
         for step in steps {
