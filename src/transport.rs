@@ -36,11 +36,19 @@ pub fn connect(home: &Path, op: &str, args: &Value) -> Result<Value> {
         &std::fs::read(home.join("connection.json"))
             .context("daemon not running; run vwork start")?,
     )?;
+    let address: std::net::SocketAddr = c
+        .url
+        .strip_prefix("http://")
+        .and_then(|url| url.strip_suffix('/'))
+        .context("invalid daemon address")?
+        .parse()
+        .context("invalid daemon socket address")?;
     ensure!(
-        c.url.starts_with("http://127.0.0.1:"),
+        address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         "refusing non-loopback daemon address"
     );
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .proxy(None)
         .timeout_global(Some(std::time::Duration::from_secs(86400)))
         .build()
         .into();

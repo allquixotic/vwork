@@ -28,7 +28,7 @@ not a measured optimum for every monorepo.
 
 Only `vwork serve` opens the redb database. A file lock rejects a second owner.
 CLI processes and stdio MCP bridges connect to its authenticated loopback HTTP
-endpoint using a generated token in `<home>/connection.json`. The daemon uses
+endpoint (explicitly bypassing HTTP proxy environment variables) using a generated token in `<home>/connection.json`. The daemon uses
 multiple request workers; redb serializes writes. A per-repository mutex
 serializes builds and exports. Independent repositories can build concurrently.
 

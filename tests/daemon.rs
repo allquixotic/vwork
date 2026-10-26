@@ -44,6 +44,31 @@ fn daemon_authentication_and_stdio() -> Result<()> {
     }
     assert!(ready, "daemon did not start");
     let conn: Value = serde_json::from_slice(&std::fs::read(home.join("connection.json"))?)?;
+    // A corporate proxy configuration must never intercept daemon traffic or its bearer token.
+    let direct = Command::new(exe)
+        .arg("--home")
+        .arg(&home)
+        .args(["call", "health"])
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("http_proxy", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .env("all_proxy", "http://127.0.0.1:9")
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .output()?;
+    assert!(
+        direct.status.success(),
+        "{}",
+        String::from_utf8_lossy(&direct.stderr)
+    );
+    let mut malformed = conn.clone();
+    malformed["url"] = json!("http://127.0.0.1:9@invalid.invalid/");
+    std::fs::write(
+        home.join("connection.json"),
+        serde_json::to_vec(&malformed)?,
+    )?;
+    assert!(vwork::transport::connect(&home, "health", &json!({})).is_err());
+    std::fs::write(home.join("connection.json"), serde_json::to_vec(&conn)?)?;
     assert!(
         ureq::post(conn["url"].as_str().unwrap())
             .send_json(json!({"operation":"health"}))

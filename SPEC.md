@@ -43,3 +43,4 @@ B1|2026-10-26|Initial compile used String reference where mode list requires str
 B2|2026-10-26|Blanket symlink-ancestor rejection blocked macOS system /var temporary paths|Allow only exact macOS system aliases; continue rejecting user symlink ancestors (V4)
 B3|2026-10-26|Strict Clippy rejected nested conditionals|Use let-chain conditionals; retain strict CI lint
 B4|2026-10-26|Git for Windows rejects Rust canonical verbatim paths|Normalize only Git-bound path arguments, including UNC paths; retain native canonical paths for filesystem safety; regression git_path_arguments
+B5|2026-10-26|HTTP client's default configuration inherits proxy environment and prefix checks do not validate URL authority|Disable proxies for loopback RPC and parse exact SocketAddr; daemon test covers bad proxy and userinfo URL
