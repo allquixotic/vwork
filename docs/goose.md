@@ -70,10 +70,35 @@ Tool display names may include Goose's extension namespace (for example
 the server. The model receives instructions during MCP initialization, and the
 recipe repeats them. You do not have to rely on automatic reading of `AGENTS.md`.
 
-Goose's `.goosehints` loading is tied to its developer extension in the inspected
-implementation. With that extension disabled, server/recipe instructions are the
-reliable route. Copy the generated `AGENTS.md` into other clients' context only
-when those clients actually load it.
+In Goose **1.56.0**, system prompt construction loads hints independently of the
+Developer extension. The server/recipe instructions above also remain available.
+This is verified in [prompt construction](https://github.com/aaif-goose/goose/blob/v1.56.0/crates/goose/src/agents/prompt_manager.rs)
+and [hint lookup](https://github.com/aaif-goose/goose/blob/v1.56.0/crates/goose/src/hints/load_hints.rs);
+older guidance that Developer is required does not describe this version.
+
+### Global instructions with Developer disabled
+
+Keep Developer and Extension Manager disabled for the vwork-only workflow.
+vwork's file tools access virtual workspaces, not arbitrary host files such as
+`~/.claude/CLAUDE.md`. Skill discovery from `~/.claude/skills` is separate: it
+neither imports global Claude instructions nor provides Claude-specific hooks,
+subagents, or a general host filesystem tool.
+
+To load global rules, manually merge the desired text into `AGENTS.md` beside
+the active Goose `config.yaml`, preserving existing rules. On default Windows
+installations this is `%APPDATA%\Block\goose\config\AGENTS.md`; with
+`GOOSE_PATH_ROOT`, use `<GOOSE_PATH_ROOT>\config\AGENTS.md`. The default context
+filenames include `AGENTS.md` and `.goosehints`. If overriding
+`CONTEXT_FILE_NAMES`, keep `AGENTS.md` in that list. Start a new session after
+setup. Adapt shell/Git instructions to vwork and omit requirements for
+unavailable hooks or subagents. This does not enable native execution tools.
+
+If an agent claims it cannot access files, distinguish virtual files from host
+files: ask it to call `vwork_workspace_info` and `vwork_files_list` for the bound
+workspace using the names actually exposed by Goose. Missing or failing vwork
+tools require checking the extension, daemon, and workspace binding. Enabling
+Developer is not the repair for a vwork-only session. Importing host-side global
+instructions is a setup operation outside the agent's virtual-file tools.
 
 ## Optional native policy hook
 
