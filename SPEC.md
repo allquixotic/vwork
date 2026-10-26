@@ -24,7 +24,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V5: Searches, diffs, status, history and merge observe overlay additions, edits and tombstones. Test `virtual_operations`.
 - V6: Exported Git commits match virtual content and preserve user's index, worktree and branch. Test `git_commit_isolation`.
 - V7: Builds serialize per repository, pin revision, respect timeout/output limits, and preserve active virtual edits. Tests `managed_builds`, `managed_build_serialization`.
-- V8: Daemon authenticates clients; MCP speaks valid JSON-RPC and hides raw shell; hook blocks native bypass. Test `protocol_and_hooks`.
+- V8: Daemon authenticates clients; MCP speaks valid JSON-RPC and hides raw shell; hook blocks native bypass. Tests `protocol_and_hooks`, `generated_goose_configuration`.
 - V9: GC retains live/forked/exported revisions and blobs; database reopens. Tests `garbage_collection`, `squash_reclaims_old_blobs`, `export_retention`.
 - V10: ZIP contains only Windows x64 binary plus allowlisted source/docs; no local state/secrets. Test `package_contents`.
 

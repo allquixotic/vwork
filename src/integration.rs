@@ -23,7 +23,8 @@ pub fn goose(home: &Path, workspace: &str, output: &Path) -> Result<()> {
         include_str!("../examples/AGENTS.md"),
     )?;
     // Goose runs command hooks through sh; POSIX quoting also handles Git Bash on Windows.
-    let executable = exe
+    let executable_path = crate::git::path_argument(&exe);
+    let executable = executable_path
         .to_string_lossy()
         .replace('\\', "/")
         .replace('\'', "'\"'\"'");

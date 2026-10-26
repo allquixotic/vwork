@@ -22,6 +22,18 @@ jobs:
           exit $LASTEXITCODE
       - name: Build Windows x64
         run: cargo +stable build --locked --release --target x86_64-pc-windows-msvc
+      - name: Smoke test native lifecycle
+        shell: pwsh
+        run: |
+          $exe = 'target/x86_64-pc-windows-msvc/release/vwork.exe'
+          $state = Join-Path $env:RUNNER_TEMP 'vwork-release-smoke'
+          & $exe --home $state start
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $exe --home $state doctor
+          $result = $LASTEXITCODE
+          & $exe --home $state stop
+          if ($result -ne 0) { exit $result }
+          exit $LASTEXITCODE
       - name: Package and checksum
         shell: pwsh
         run: |

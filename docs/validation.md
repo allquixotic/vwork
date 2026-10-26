@@ -5,7 +5,7 @@ Local validation on 2026-10-26 used an Apple Silicon Mac (`arm64`) and
 
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --locked --all-targets -- -D warnings`: passed.
-- `cargo test --locked --all-targets`: 19 integration tests passed.
+- `cargo test --locked --all-targets`: 20 integration tests passed.
 - `cargo build --locked --release`: passed.
 - The optimized executable registered this repository, created a virtual snapshot,
   materialized its managed build tree, and successfully ran the then-current test suite (18 tests)
