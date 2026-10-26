@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3
+
+- Suppress console windows for captured Git, configured-task and package helpers on Windows while preserving pipes and exit status.
+- Add read-only MCP `vwork_storage_info` with manifest/blob counters, metadata sizes and explicit deduplication scopes.
+- Explain shared base manifests, per-workspace/revision records and the distinction between repository IDs and remote URLs; discourage disposable storage probes.
+
 ## 0.2.2
 
 - MCP automatically starts or reuses the shared daemon when an enabled extension

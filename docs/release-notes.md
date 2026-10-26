@@ -1,30 +1,21 @@
-vwork 0.2.2 automatically starts its daemon when Goose loads the enabled MCP
-extension. Existing `vwork --home ... mcp --workspace ...` configuration works
-without a separate startup shortcut, in Fastrock and the Goose CLI.
+vwork 0.2.3 fixes Windows console flashes from captured Git, configured-task and
+package subprocesses. Their output still reaches the calling tool, and exit codes
+remain intact. The external Goose/MCP architecture is unchanged.
 
-- Running daemons are reused. Concurrent starts share one owner per state folder.
-- Startup and health checks have bounded waits; existing owners are never killed
-  or replaced. The daemon stays running after an MCP client exits.
-- `mcp --no-auto-start` preserves explicitly managed daemon startup.
-- Windows launches inherit only the daemon log and NUL input handles, keeping
-  MCP pipes independent of the shared daemon's lifetime.
-- Generated Goose hooks use a matcher before command execution, so ordinary
-  vwork calls avoid launching `sh`. Existing native-tool blocks and
-  `on_failure: block` remain in place for matching tools.
+A new read-only `vwork_storage_info` tool gives agents daemon-wide storage counters
+and explicit sharing scopes. Base path manifests share by repository ID and commit;
+identical edited content deduplicates across the daemon. Workspaces retain their
+own small records and revisions. A common remote URL does not deduplicate separate
+repository registrations or Git clones. Inspection needs no probe workspaces.
 
-Upgrade: stop the old daemon, replace `vwork.exe` with this Azure-signed binary,
-and reconnect the enabled extension. To reduce hook overhead, regenerate the
-Goose setup with `vwork goose`, then merge the generated `plugin/hooks/hooks.json`
-into the installed plugin while preserving your customizations. The binary does
-not rewrite your Goose configuration. Developer remains disabled for vwork-only
-workflows. The database format is unchanged.
+Upgrade: stop the old daemon, replace `vwork.exe` with this signed binary, and
+reconnect Goose to refresh the MCP tool list. Regenerate/merge agent instructions
+for the new storage guidance. If an old unfiltered policy hook is installed,
+regenerate/merge `plugin/hooks/hooks.json` too: Goose's per-call `sh` launch is
+separate from vwork's child processes. Preserve local configuration customizations.
+Developer can remain disabled. No Fastrock or Goose rebuild is needed.
 
-Workstation policy must allow the daemon process to start. If automatic launch
-is denied, keep the permitted manual startup route; no security-policy changes,
-elevation, or alternate launcher retries are attempted. Starting the daemon does
-not register repositories or create missing workspaces.
-
-The Windows x64 ZIP contains the native executable, source, docs and configuration
-templates. Publication requires Azure Authenticode signing, publisher/timestamp
-verification, a native MCP cold-start/reuse smoke test, SHA-256 checksums and
-GitHub provenance attestation. Only Windows binaries are published.
+The Windows x64 ZIP is built and signed in CI, with publisher/timestamp verification,
+native lifecycle smoke testing, checksums and GitHub provenance attestation.
+The version-1 database is compatible; the new statistics do not migrate stored data.
+Workstation application-control policy still applies to process creation.

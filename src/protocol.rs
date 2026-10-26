@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub const INSTRUCTIONS: &str = "You are working in a vwork virtual workspace. Use vwork_files_read/list/glob/search and vwork_workspace_info/status/diff/history instead of shell, grep, rg, find, cat, or native Git. Virtual changes are not files in the original checkout. Before editing, obtain the current revision; pass it as expected_revision. On revision conflict, reread and reconcile, never blindly retry. vwork_files_apply_patch takes an atomic array of full-file replacements or deletions, not a unified diff. Use vwork_package_list/run for configured npm/Cargo/pip actions and vwork_workspace_run_task for other configured builds/tests. Both share one build checkout per repo; report the exact tested revision and exit status. Native Git there has a private index and borrowed objects: HEAD is the base commit, virtual edits appear staged and dirty. Import needed source_changes with explicit paths and returned revision before any subsequent build can overwrite them; never import dependency trees, environments or build caches. Use vwork_workspace_export only when the user needs physical files. Never claim a build passed unless its tool result says success. Forks share immutable history. Merge reports conflicts without partial changes. Tasks, package projects and global maintenance are configured outside model tools by the human CLI.";
+pub const INSTRUCTIONS: &str = "You are working in a vwork virtual workspace. Use vwork_files_read/list/glob/search and vwork_workspace_info/status/diff/history instead of shell, grep, rg, find, cat, or native Git. Virtual changes are not files in the original checkout. Before editing, obtain the current revision; pass it as expected_revision. On revision conflict, reread and reconcile, never blindly retry. vwork_files_apply_patch takes an atomic array of full-file replacements or deletions, not a unified diff. Use vwork_package_list/run for configured npm/Cargo/pip actions and vwork_workspace_run_task for other configured builds/tests. Both share one build checkout per repo; report the exact tested revision and exit status. Native Git there has a private index and borrowed objects: HEAD is the base commit, virtual edits appear staged and dirty. Import needed source_changes with explicit paths and returned revision before any subsequent build can overwrite them; never import dependency trees, environments or build caches. Use vwork_workspace_export only when the user needs physical files. Never claim a build passed unless its tool result says success. Use vwork_storage_info for storage-sharing questions; do not create/drop probe workspaces just to measure sharing. Base manifests are shared per repository ID and commit; edited blobs deduplicate across this daemon. A common remote URL does not deduplicate separate repository registrations. Forks share immutable history. Merge reports conflicts without partial changes. Tasks, package projects and global maintenance are configured outside model tools by the human CLI.";
 
 pub fn tools(bound: bool) -> Vec<Value> {
     let mut out = Vec::new();
@@ -28,6 +28,12 @@ pub fn tools(bound: bool) -> Vec<Value> {
     let p = ("path", "string", true);
     let lim = ("limit", "integer", false);
     let off = ("offset", "integer", false);
+    add(
+        "storage_info",
+        "Read daemon-wide shared storage counters and deduplication scopes, including base manifests, compressed blobs and workspace/revision metadata. No probe workspace or native CLI needed; includes retained/uncollected records, not per-workspace disk allocation.",
+        vec![],
+        true,
+    );
     add(
         "repo_list",
         "List registered Git repositories. Registration is performed by the human CLI.",
@@ -70,7 +76,7 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "workspace_size",
-        "Rank virtual directories by logical byte size without extracting contents. Shared storage is reported separately by CLI stats.",
+        "Rank virtual directories by logical byte size without extracting contents. For shared physical storage and deduplication scopes, use vwork_storage_info.",
         vec![w, lim, off],
         true,
     );

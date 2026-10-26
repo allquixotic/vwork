@@ -11,6 +11,7 @@ Source lives in vwork, not the original checkout or the current shell directory.
 - Rename/copy/delete using the corresponding virtual tools. File modes are preserved.
 - Use virtual status/diff/history/restore/merge instead of shell Git.
 - Fork before independent work. Never mutate another agent's workspace without assignment.
+- For storage/sharing questions, read `vwork_storage_info`. Do not create/drop probe workspaces merely to investigate storage. Base manifests share by repository ID and commit; edited blobs deduplicate across the daemon. A matching remote URL does not deduplicate separate repository registrations. Logical workspace size is not physical disk allocation.
 - Native tools see a different filesystem. Do not use shell, grep, rg, find, cat, native file editors, or native Git to operate on virtual source.
 - Builds/tests use `vwork_workspace_run_task` and a human-configured task name. Report tested revision, success, exit status and any truncated output accurately.
 - npm/Cargo/pip use `vwork_package_list` and `vwork_package_run` with a configured project/action. Do not run package managers in a shell or install packages into virtual paths.

@@ -14,7 +14,14 @@
    branches. The revision/overlay layer supplies those.
 
 Base content stays in an existing Git object database. Each imported commit's
-path/mode/size/object metadata is stored once in redb. `git cat-file --batch`
+path/mode/size/object metadata is stored once per **repository ID and commit** in
+redb. Creating another workspace at that commit adds a workspace record and an
+empty revision, reusing the existing manifest. A fork only adds a workspace record
+pointing at the existing revision. Separate repository registrations have separate
+manifests even if they use the same Git directory or remote URL. Separately cloned
+Git object stores remain separate on disk; vwork does not deduplicate them by URL.
+Identical edited content still shares one compressed blob throughout the daemon.
+`git cat-file --batch`
 streams base bytes when a read/search/build needs them. Nothing checks out a
 second tree for a virtual fork. A cached persistent `im::OrdMap` shares in-memory
 path nodes across reconstructed snapshots.
@@ -23,6 +30,13 @@ Each edit stores a compressed whole file. Incompressible data may become slightl
 larger; repeatedly editing a huge binary is a poor fit. Base Git objects already
 use Git's own compression. Compression level 3 is a speed/size starting point,
 not a measured optimum for every monorepo.
+
+`vwork_storage_info` exposes read-only daemon counters, sharing scopes and byte
+accounting to MCP. The CLI `stats` and `storage_info` operations return the same
+information. Base-manifest/workspace/revision bytes count serialized keys and
+values, not redb's physical page allocation. Counts include retained and
+uncollected records. Database file size includes page overhead and reusable free
+space; Git objects, builds, exports and caches live outside that file.
 
 ## One owner, many clients
 
@@ -34,6 +48,9 @@ and MCP disconnect does not stop the shared daemon. Windows uses an explicit
 process handle allowlist (NUL stdin and daemon log only) so background children
 cannot retain a bridge's MCP pipes. Unix starts a separate session with redirected
 stdio. `mcp --no-auto-start` opts out of daemon creation.
+Captured Git, configured task and package subprocesses use `CREATE_NO_WINDOW` on
+Windows. Redirecting their output alone does not suppress console creation.
+Pipes and exit codes are preserved. Normal user-invoked CLI behavior is unchanged.
 CLI processes and stdio MCP bridges connect to its authenticated loopback HTTP
 endpoint (explicitly bypassing HTTP proxy environment variables) using a generated token in `<home>/connection.json`. The daemon uses
 multiple request workers; redb serializes writes. A per-repository mutex

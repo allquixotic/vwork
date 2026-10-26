@@ -129,7 +129,7 @@ fn run() -> Result<()> {
             );
         }
         Commands::Doctor => {
-            let git = std::process::Command::new("git")
+            let git = vwork::process::command("git")
                 .arg("--version")
                 .output()
                 .context("Git unavailable")?;

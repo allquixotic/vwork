@@ -74,6 +74,18 @@ your permitted manual startup route. It does not change policy or request elevat
 
 Start a new Goose session after configuration changes. A recipe alone can leave
 other globally enabled extensions active, so use the configuration fragment too.
+
+Since 0.2.3, vwork's captured Git/build/package helpers do not allocate Windows
+console windows. MCP calls travel over the existing bridge; they do not launch a
+new vwork CLI process per tool call. If every call still flashes a console, check
+that the installed policy hook has the 0.2.2+ matcher described below. An older
+unfiltered hook makes Goose launch `sh` on every call, independently of vwork's
+helper settings. Updating vwork alone does not replace that installed hook.
+
+Agents can use `vwork_storage_info` for shared storage counters and deduplication
+scopes without native CLI access. Reconnect the extension after replacing the
+binary to refresh its tool list. Regenerated agent instructions direct storage
+questions to that read-only tool instead of creating disposable probe workspaces.
 You can launch with:
 
 ```sh

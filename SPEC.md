@@ -35,6 +35,8 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V15: Package-tool path arguments and environment values use standard absolute paths; Windows NT verbatim prefixes stay internal. Tests `package_process_paths`, `package_input_changes`.
 - V16: Enabled MCP startup ! reuse or start one daemon per home with bounded probes/waits; MCP stdout ! JSON-RPC only; bridge exit ! keep shared owner alive; explicit opt-out ! no start; startup failure ! no owner takeover. Tests `v16_mcp_cold_start_and_reuse`, `v16_concurrent_starters`, `v16_startup_bounds`, `v16_mcp_opt_out`.
 - V17: Generated Goose hook matcher ! cover every blocked tool family; vwork calls ! skip hook process; selected hook ! retain on_failure=block. Tests `v17_generated_hook_matcher`, `protocol_and_hooks`.
+- V18: Captured Git/task/package subprocesses on Windows ! no console allocation; preserve redirected IO and exit status. Tests `v18_windows_task_console`, `v18_process_stdio`.
+- V19: Read-only MCP storage info ! report shared manifests/blobs and per-workspace/revision records without probe mutations; same registered repo+commit ! reuse base manifest; identical edits ! reuse daemon blobs. Test `v19_storage_sharing`.
 
 # §T
 id|status|task|cites
@@ -48,6 +50,7 @@ T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
 T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
 T7|x|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
 T8|x|Automatic MCP daemon lifecycle, bounded concurrent startup, opt-out and hook matching; signed Windows CI release|V8,V10,V16,V17,I.rpc,I.goose,I.release
+T9|~|Suppress Windows helper consoles; expose storage-sharing evidence to MCP; signed Windows release|V8,V10,V18,V19,I.rpc,I.goose,I.release
 
 # §B
 id|date|cause|fix
@@ -66,3 +69,5 @@ B11|2026-10-26|Hosted Windows runner may omit PSGallery registration required by
 B12|2026-10-26|Goose docs incorrectly tied hints to Developer; obscured host/virtual file and skill/instruction boundaries|Verify 1.56.0 prompt builder/lookup; document global context setup with Developer disabled; documentation correction, no runtime invariant
 B13|2026-10-26|Windows background spawn inherited unrelated MCP/CLI pipe handles despite redirected stdio, preventing reader EOF after bridge exit|V16; explicit STARTUPINFOEX handle allowlist for NUL/log only; native Windows cold-start/exit and concurrent-start regressions
 B14|2026-10-26|Release signing setup failed downloading the pinned TrustedSigning 0.5.8 package from PowerShell Gallery before signing began|Package URL subsequently returned HTTP 200; retry unchanged tag/source with mandatory signing and verification intact; external download failure, no runtime invariant change
+B15|2026-10-26|Captured Git and task subprocesses used default Windows creation flags, allocating consoles from the detached daemon|V18; shared no-window command constructor with native Windows console/IO regression
+B16|2026-10-26|MCP lacked shared-storage counters and manifest-sharing contract, prompting speculative answers and disposable probe workspaces|V19; read-only storage_info plus explicit sharing scopes and counter-based regression

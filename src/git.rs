@@ -35,7 +35,7 @@ pub fn path_argument(path: &Path) -> std::ffi::OsString {
 }
 
 pub fn command(repo: &Repository) -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::process::command("git");
     cmd.args(["-c", "core.longpaths=true"])
         .arg("--git-dir")
         .arg(path_argument(&repo.git_dir));
@@ -237,7 +237,7 @@ pub fn prepare_build(
     };
     if !admin.join("HEAD").exists() {
         std::fs::create_dir_all(admin)?;
-        let output = Command::new("git")
+        let output = crate::process::command("git")
             .args([
                 "init",
                 "--bare",

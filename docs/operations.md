@@ -22,6 +22,7 @@ Use forward slashes for all **virtual** paths, on every OS.
 
 | Operation | Arguments beyond optional workspace | Behavior |
 |---|---|---|
+| `storage_info` | none | Read-only daemon storage counters, shared manifests/blobs and deduplication scopes |
 | `repo_list` | none | Registered IDs/paths |
 | `repo_log` | `repo`, optional `reference`, `limit` | Actual Git history |
 | `workspace_list` | none | IDs, repos, current heads |
@@ -52,7 +53,7 @@ Use forward slashes for all **virtual** paths, on every OS.
 | `package_run` | `expected_revision`, `project`, `action` | Serialized package action; reports physical source/input changes |
 | `workspace_drop` | `expected_revision` | Remove one workspace reference |
 
-`repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.
+`storage_info`, `repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.
 A newly created workspace requires a new explicit ID, even when the bridge is
 bound to another existing one.
 

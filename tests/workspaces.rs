@@ -348,6 +348,149 @@ fn protocol_and_hooks() -> Result<()> {
     assert_eq!(denied["error"]["code"], -32602);
     Ok(())
 }
+
+#[test]
+fn v18_process_stdio() -> Result<()> {
+    if std::env::var_os("VWORK_TEST_STDIO_PROBE").is_some() {
+        #[cfg(windows)]
+        // SAFETY: GetConsoleWindow has no arguments or ownership requirements.
+        assert!(unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null());
+        let mut input = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+        println!("captured-input:{input}");
+        eprintln!("captured-error");
+        std::process::exit(7);
+    }
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = vwork::process::command(std::env::current_exe()?)
+        .args(["--exact", "v18_process_stdio", "--nocapture"])
+        .env("VWORK_TEST_STDIO_PROBE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child.stdin.take().unwrap().write_all(b"hello")?;
+    let result = child.wait_with_output()?;
+    assert_eq!(
+        result.status.code(),
+        Some(7),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(String::from_utf8(result.stdout)?.contains("captured-input:hello"));
+    assert!(String::from_utf8(result.stderr)?.contains("captured-error"));
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn v18_windows_task_console() -> Result<()> {
+    if std::env::var_os("VWORK_TEST_TASK_CONSOLE_PROBE").is_some() {
+        // SAFETY: GetConsoleWindow has no arguments or ownership requirements.
+        assert!(unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null());
+        println!("task-has-no-console");
+        return Ok(());
+    }
+    let f = Fixture::new();
+    f.engine.call(
+        "task_set",
+        &json!({"repo":"repo","name":"console-probe",
+        "program":std::env::current_exe()?,
+        "args":["--exact","v18_windows_task_console","--nocapture"],
+        "env":{"VWORK_TEST_TASK_CONSOLE_PROBE":"1"},"timeout_seconds":10}),
+    )?;
+    let result = f.engine.call(
+        "workspace_run_task",
+        &json!({"workspace":"one",
+        "expected_revision":f.head("one"),"task":"console-probe"}),
+    )?;
+    assert_eq!(result["success"], true, "{result}");
+    assert!(
+        result["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("task-has-no-console")
+    );
+    Ok(())
+}
+
+#[test]
+fn v19_storage_sharing() -> Result<()> {
+    let f = Fixture::new();
+    let tool = protocol::tools(true)
+        .into_iter()
+        .find(|t| t["name"] == "vwork_storage_info")
+        .expect("shared storage evidence must be available without native CLI");
+    assert_eq!(tool["annotations"]["readOnlyHint"], true);
+    let info = || f.engine.call("storage_info", &json!({}));
+    let before = info()?;
+    assert_eq!(before["base_manifests"], 1);
+    assert_eq!(before["base_entries"], 3);
+    assert_eq!(before["blobs"], 0);
+    let reply = protocol::mcp_response(
+        &json!({"id":1,"method":"tools/call",
+        "params":{"name":"vwork_storage_info","arguments":{}}}),
+        Some("one"),
+        |op, a| f.engine.call(op, a),
+    )
+    .unwrap();
+    assert_eq!(reply["result"]["isError"], false);
+    assert_eq!(info()?, before, "inspection must not mutate records");
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"repo","workspace":"two"}),
+    )?;
+    let second = info()?;
+    assert_ne!(f.head("one"), f.head("two"));
+    for field in [
+        "base_manifests",
+        "base_entries",
+        "base_manifest_bytes",
+        "blobs",
+        "compressed_blob_bytes",
+    ] {
+        assert_eq!(second[field], before[field], "shared {field}");
+    }
+    assert_eq!(second["workspaces"], 2);
+    assert_eq!(second["revisions"], 2);
+    assert!(second["workspace_record_bytes"].as_u64() > before["workspace_record_bytes"].as_u64());
+    assert!(second["revision_record_bytes"].as_u64() > before["revision_record_bytes"].as_u64());
+    f.engine
+        .call("workspace_fork", &json!({"workspace":"one","name":"fork"}))?;
+    assert_eq!(info()?["revisions"], 2);
+    assert_eq!(f.head("one"), f.head("fork"));
+    f.write("one", "README.md", "shared edited content");
+    let edited = info()?;
+    f.write("two", "README.md", "shared edited content");
+    let twice = info()?;
+    assert_eq!(edited["blobs"], 1);
+    assert_eq!(twice["blobs"], 1);
+    assert_eq!(
+        twice["compressed_blob_bytes"],
+        edited["compressed_blob_bytes"]
+    );
+    // Registration identity, not a URL or object-store path, scopes base manifests.
+    f.engine
+        .call("repo_register", &json!({"repo":"alias","path":f.root}))?;
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"alias","workspace":"alias-one"}),
+    )?;
+    assert_eq!(info()?["base_manifests"], 2);
+    assert_eq!(info()?["base_entries"], 6);
+    f.write("alias-one", "README.md", "shared edited content");
+    assert_eq!(
+        info()?["blobs"],
+        1,
+        "edited blobs also share across registrations"
+    );
+    let sharing = &info()?["sharing"];
+    assert_eq!(sharing["base_manifest_key"], "repository_id+commit");
+    assert_eq!(sharing["edited_blob_scope"], "daemon");
+    assert_eq!(sharing["remote_url_deduplication"], false);
+    Ok(())
+}
 #[test]
 fn garbage_collection() -> Result<()> {
     let f = Fixture::new();

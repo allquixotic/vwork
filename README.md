@@ -117,7 +117,7 @@ partially changing the workspace.
   the repository's object database. Virtual edits appear staged and dirty.
 - Configured npm, Cargo and pip projects with install/build/test actions, reusable
   caches, dependency-input checks and explicit lockfile/source writeback.
-- Logical directory-size reports, global storage stats, GC, history squash and
+- Logical directory-size reports, read-only MCP shared-storage counters, global storage stats, GC, history squash and
   offline redb compaction.
 - Generated Goose recipe/config fragment, consumer `AGENTS.md` and native
   `PreToolUse` hook. Server instructions work with other stdio MCP clients too.

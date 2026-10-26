@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex, RwLock};
 use wait_timeout::ChildExt;
 
@@ -377,7 +377,7 @@ impl Engine {
                     "repository id already registered"
                 );
                 let root = PathBuf::from(string(a, "path")?).canonicalize()?;
-                let out = Command::new("git")
+                let out = crate::process::command("git")
                     .arg("-C")
                     .arg(git::path_argument(&root))
                     .args(["rev-parse", "--show-toplevel"])
@@ -391,7 +391,7 @@ impl Engine {
                     !self.home.starts_with(&root) && !root.starts_with(&self.home),
                     "vwork home and registered checkout must not overlap"
                 );
-                let out = Command::new("git")
+                let out = crate::process::command("git")
                     .arg("-C")
                     .arg(git::path_argument(&root))
                     .args(["rev-parse", "--absolute-git-dir"])
@@ -543,7 +543,7 @@ impl Engine {
                 ));
             }
             "gc" => return self.gc(),
-            "stats" => return self.stats(),
+            "stats" | "storage_info" => return self.stats(),
             "repo_log" => {
                 let repo = self.repo(string(a, "repo")?)?;
                 let reference = git::resolve(&repo, optional(a, "reference", "HEAD"))?;
@@ -1556,21 +1556,66 @@ impl Engine {
     }
 
     fn stats(&self) -> Result<Value> {
-        let mut blob_bytes = 0;
-        let mut blobs = 0;
+        let (mut repositories, mut workspaces, mut revisions) = (0u64, 0u64, 0u64);
+        let (mut blobs, mut blob_bytes) = (0u64, 0u64);
+        let (mut manifests, mut entries, mut manifest_bytes) = (0u64, 0u64, 0u64);
+        let (mut workspace_bytes, mut revision_bytes) = (0u64, 0u64);
         let txn = self.db.begin_read()?;
         let table = txn.open_table(RECORDS)?;
-        for item in table.range("b/"..)? {
+        // One read transaction gives consistent counts without cloning records
+        // or reading/decompressing Git/blob content. Byte counts are logical
+        // key/value bytes, not redb page allocation or per-workspace disk usage.
+        for item in table.iter()? {
             let (key, value) = item?;
-            if !key.value().starts_with("b/") {
-                break;
+            let bytes = (key.value().len() + value.value().len()) as u64;
+            match key.value().split('/').next().unwrap_or("") {
+                "r" => repositories += 1,
+                "w" => {
+                    workspaces += 1;
+                    workspace_bytes += bytes;
+                }
+                "v" => {
+                    revisions += 1;
+                    revision_bytes += bytes;
+                }
+                "m" => {
+                    manifests += 1;
+                    manifest_bytes += bytes;
+                }
+                "t" => {
+                    entries += 1;
+                    manifest_bytes += bytes;
+                }
+                "b" => {
+                    blobs += 1;
+                    blob_bytes += value.value().len() as u64;
+                }
+                _ => {}
             }
-            blobs += 1;
-            blob_bytes += value.value().len();
         }
-        Ok(
-            json!({"repositories":self.scan("r/")?.len(),"workspaces":self.scan("w/")?.len(),"revisions":self.scan("v/")?.len(),"blobs":blobs,"compressed_blob_bytes":blob_bytes,"database_file_bytes":std::fs::metadata(self.home.join("workspaces.redb"))?.len(),"compression_level":self.config.compression_level}),
-        )
+        Ok(json!({
+            "scope":"daemon", "repositories":repositories, "workspaces":workspaces,
+            "revisions":revisions, "blobs":blobs, "compressed_blob_bytes":blob_bytes,
+            "base_manifests":manifests, "base_entries":entries, "base_manifest_bytes":manifest_bytes,
+            "workspace_record_bytes":workspace_bytes, "revision_record_bytes":revision_bytes,
+            "database_file_bytes":std::fs::metadata(self.home.join("workspaces.redb"))?.len(),
+            "compression_level":self.config.compression_level,
+            "sharing":{
+                "base_manifest_key":"repository_id+commit",
+                "git_base_content":"Read from registered Git object stores; not copied into redb",
+                "edited_blob_scope":"daemon", "edited_blob_key":"BLAKE3 of raw content",
+                "remote_url_deduplication":false,
+                "new_workspace":"One workspace record and one empty revision; reuses an imported base manifest for the same repository ID and commit",
+                "fork":"One workspace record pointing to the existing immutable revision; copies no manifest or content"
+            },
+            "accounting_notes":[
+                "Counts include retained and not-yet-collected records; inspection makes no changes",
+                "Record byte counts are serialized keys/values, not physical allocation per workspace",
+                "Database file size includes page overhead and reusable space; it is not the sum of live record sizes",
+                "Git object stores, build checkouts, exports and package caches are outside these database sizes",
+                "Different repository registrations have separate base manifests, even for the same path or remote URL"
+            ]
+        }))
     }
     fn gc(&self) -> Result<Value> {
         // Hold write transaction across mark+sweep so publication cannot race reachability.
@@ -1762,7 +1807,7 @@ fn execute_process(
     timeout: std::time::Duration,
     max: usize,
 ) -> Result<ProcessOutput> {
-    let mut cmd = Command::new(program);
+    let mut cmd = crate::process::command(program);
     cmd.args(args)
         .current_dir(cwd)
         .envs(env)
