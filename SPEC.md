@@ -47,7 +47,7 @@ T4|x|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V
 T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
 T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
 T7|x|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
-T8|~|Automatic MCP daemon lifecycle, bounded concurrent startup, opt-out and hook matching; signed Windows CI release|V8,V10,V16,V17,I.rpc,I.goose,I.release
+T8|x|Automatic MCP daemon lifecycle, bounded concurrent startup, opt-out and hook matching; signed Windows CI release|V8,V10,V16,V17,I.rpc,I.goose,I.release
 
 # §B
 id|date|cause|fix
@@ -65,3 +65,4 @@ B10|2026-10-26|Azure trust used legacy name-only subject while new repository em
 B11|2026-10-26|Hosted Windows runner may omit PSGallery registration required by Azure signing action|Register default repository before signing; preserve failed tags and allow stable +build.N retries; publication still requires valid timestamped signature
 B12|2026-10-26|Goose docs incorrectly tied hints to Developer; obscured host/virtual file and skill/instruction boundaries|Verify 1.56.0 prompt builder/lookup; document global context setup with Developer disabled; documentation correction, no runtime invariant
 B13|2026-10-26|Windows background spawn inherited unrelated MCP/CLI pipe handles despite redirected stdio, preventing reader EOF after bridge exit|V16; explicit STARTUPINFOEX handle allowlist for NUL/log only; native Windows cold-start/exit and concurrent-start regressions
+B14|2026-10-26|Release signing setup failed downloading the pinned TrustedSigning 0.5.8 package from PowerShell Gallery before signing began|Package URL subsequently returned HTTP 200; retry unchanged tag/source with mandatory signing and verification intact; external download failure, no runtime invariant change

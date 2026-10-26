@@ -67,7 +67,8 @@ Repository registration and workspace creation remain explicit setup operations.
 Startup uses a per-home lock and authenticated health checks. Concurrent clients
 reuse one owner; closing a conversation does not stop it. Health probes are bounded
 to 500 ms and startup waits to 15 seconds. A locked, unresponsive owner is not killed
-or replaced. Failures go to MCP stderr and `daemon.log`, leaving stdout for JSON-RPC.
+or replaced. Startup errors go to MCP stderr; daemon output goes to `daemon.log`,
+leaving MCP stdout for JSON-RPC.
 If workstation policy refuses the daemon launch, vwork reports the error; retain
 your permitted manual startup route. It does not change policy or request elevation.
 

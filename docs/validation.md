@@ -1,5 +1,42 @@
 # Validation record
 
+## 0.2.2 — automatic MCP startup
+
+Verified 2026-10-26:
+
+- [Source CI 40408738471](https://github.com/allquixotic/vwork/actions/runs/40408738471)
+  passed formatting, strict Clippy and all **30 integration tests** on Windows
+  and macOS for `b2c64b2b2ea858146c7e52921f8bebf0c22922d6`.
+- Seven daemon/configuration integration tests also passed on the `games`
+  Windows VM. These exercise cold MCP startup, reuse after bridge exit, six
+  simultaneous starters, stale connection metadata, bounded unresponsive-owner
+  handling, explicit opt-out, invalid workspace binding and generated hook
+  matching. Cold-start and missing-matcher regressions failed before the fix.
+- The first Windows implementation exposed inherited MCP pipe handles keeping
+  readers open after bridge exit. The explicit process handle allowlist fixes
+  this (B13); the cold-start test waits for actual process/pipe completion.
+- Local macOS and Windows-target strict Clippy, formatting and release-workflow
+  actionlint passed. Tests were run on Windows and hosted CI, not Sean's Mac.
+- Corporate AVD launch policy and the installed Goose configuration are not
+  changed or reproduced by these fixtures. Existing installations must upgrade
+  vwork and regenerate/merge their hook configuration to use the matcher.
+- [Stable v0.2.2](https://github.com/allquixotic/vwork/releases/tag/v0.2.2) was
+  published by [release CI 40409173923, attempt 2](https://github.com/allquixotic/vwork/actions/runs/40409173923/attempts/2).
+  Attempt 1 failed downloading the pinned PowerShell signing module before
+  signing began; the unchanged tag/source succeeded on retry. Both attempts ran
+  all 30 tests successfully. The successful attempt verified Sean McNamara's
+  Authenticode publisher and Microsoft RFC 3161 timestamp, then exercised cold
+  MCP startup, owner reuse, doctor and stop with the signed binary.
+- Downloaded ZIP: **3,250,848 bytes**, 46 entries and one Windows x64 executable.
+  ZIP CRC, SHA256SUMS, bundled version and the signing evidence's executable hash
+  match. `gh attestation verify` passed with the exact repository, release
+  workflow, `refs/tags/v0.2.2` and source commit constraints. ZIP SHA-256:
+  `cef11c66ea04177c675dcc47dfcaa92444ba2aa497ce942f67ea5067bd5675b0`.
+  Signed executable SHA-256:
+  `16054f166b9c146635a951ce2411082e9a1b2035159af9b94cd88d1f0afcd2c1`.
+- This release is available from GitHub. The manual S3 publishing skill was not
+  invoked for this change, so the existing S3 mirror was not updated.
+
 ## 0.2.1 — signed stable release
 
 Verified 2026-10-26:
@@ -125,7 +162,7 @@ not simulated or claimed as verified here.
 
 ## Published artifact
 
-This subsection records 0.1.0. The stable S3 URL now serves the latest ZIP;
+This subsection records 0.1.0. The S3 URL is mutable and may lag GitHub releases;
 use the GitHub v0.1.0 release for the historical artifact described here.
 
 - [Final source CI, Windows and macOS](https://github.com/allquixotic/vwork/actions/runs/40374269796): passed.
