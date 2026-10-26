@@ -282,7 +282,7 @@ pub fn hook(payload: &Value) -> Value {
             || lower.starts_with("filesystem__")
             || lower.starts_with("terminal__"));
     if blocked {
-        json!({"decision":"block","reason":"This session uses virtual source. Use vwork_files_* and vwork_workspace_* tools; native tools see a different filesystem. Use vwork_workspace_run_task for builds."})
+        json!({"decision":"block","reason":"This session uses virtual source. Use vwork_files_* and vwork_workspace_* tools; native tools see a different filesystem. Use vwork_package_list/run for configured npm/Cargo/pip actions, or vwork_workspace_run_task for other builds. Import needed source_changes explicitly before the next action."})
     } else {
         json!({"decision":"allow"})
     }

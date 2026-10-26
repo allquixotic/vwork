@@ -3,7 +3,7 @@
 1. Run formatting, strict Clippy and all tests locally. Inspect the change and
    update CHANGELOG.md/version/release notes.
 2. Push main and verify the CI jobs on Windows x64 and macOS.
-3. Push a version tag (for example `v0.1.0`). The Windows-only release workflow
+3. Push a version tag (for example `v0.2.0`). The Windows-only release workflow
    tests the tag, builds `x86_64-pc-windows-msvc`, creates the ZIP with the native
    `vwork package` command, calculates SHA-256, and publishes a GitHub release.
 4. Download `vwork-windows-x64.zip` and verify `SHA256SUMS` before mirroring it.

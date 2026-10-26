@@ -327,6 +327,12 @@ fn protocol_and_hooks() -> Result<()> {
         protocol::hook(&json!({"tool_name":"vwork_files_read"}))["decision"],
         "allow"
     );
+    assert!(
+        protocol::hook(&json!({"tool_name":"shell"}))["reason"]
+            .as_str()
+            .unwrap()
+            .contains("vwork_package_list/run")
+    );
     assert!(!protocol::tools(true).iter().any(|v| v["name"] == "shell"));
     assert!(
         protocol::tools(true)
