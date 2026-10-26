@@ -628,3 +628,54 @@ fn git_path_arguments() {
         "/tmp/repo"
     );
 }
+
+#[test]
+fn build_git_metadata() -> Result<()> {
+    let f = Fixture::new();
+    git(&f.root, &["tag", "-a", "v9.8.7", "-m", "version"]);
+    let original_head = git(&f.root, &["rev-parse", "HEAD"]);
+    let original_index = std::fs::read(f.root.join(".git/index"))?;
+    let object_files = || {
+        walkdir::WalkDir::new(f.root.join(".git/objects"))
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .count()
+    };
+    let original_objects = object_files();
+    f.engine.call("task_set",&json!({"repo":"repo","name":"describe","program":"git","args":["describe","--tags","--always","--dirty"]}))?;
+    let clean = f.engine.call(
+        "workspace_run_task",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"task":"describe"}),
+    )?;
+    assert_eq!(clean["success"], true);
+    assert_eq!(clean["stdout"].as_str().unwrap().trim(), "v9.8.7");
+    f.write("one", "new-file", "virtual addition");
+    let dirty = f.engine.call(
+        "workspace_run_task",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"task":"describe"}),
+    )?;
+    assert_eq!(dirty["stdout"].as_str().unwrap().trim(), "v9.8.7-dirty");
+    f.engine.call(
+        "task_set",
+        &json!({"repo":"repo","name":"head","program":"git","args":["rev-parse","HEAD"]}),
+    )?;
+    let head = f.engine.call(
+        "workspace_run_task",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"task":"head"}),
+    )?;
+    assert_eq!(head["stdout"].as_str().unwrap().trim(), original_head);
+    let build = f.home.join("build/repo");
+    assert!(build.join(".git").is_file());
+    assert_eq!(git(&build, &["show", ":new-file"]), "virtual addition");
+    assert!(
+        f.home
+            .join("build-git/repo/objects/info/alternates")
+            .is_file()
+    );
+    assert_eq!(git(&f.root, &["rev-parse", "HEAD"]), original_head);
+    assert_eq!(std::fs::read(f.root.join(".git/index"))?, original_index);
+    assert_eq!(object_files(), original_objects);
+    assert!(!f.root.join("new-file").exists());
+    Ok(())
+}

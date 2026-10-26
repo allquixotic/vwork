@@ -221,3 +221,191 @@ pub fn write_tree(repo: &Repository, entries: &Tree) -> Result<String> {
     }
     emit(repo, &root)
 }
+
+/// Build a private Git view without cloning objects or touching the source index/refs.
+/// The private index represents virtual content; HEAD remains its real Git base.
+pub fn prepare_build(
+    source: &Repository,
+    admin: &Path,
+    checkout: &Path,
+    base: &str,
+    changes: &std::collections::BTreeMap<String, Option<Entry>>,
+    mut content: impl FnMut(&Entry) -> Result<Vec<u8>>,
+) -> Result<Repository> {
+    let object_format =
+        String::from_utf8(run(source, &["rev-parse", "--show-object-format"], None)?)?;
+    let object_format = object_format.trim();
+    ensure!(
+        ["sha1", "sha256"].contains(&object_format),
+        "unsupported Git object format"
+    );
+    let view = Repository {
+        id: source.id.clone(),
+        path: checkout.to_path_buf(),
+        git_dir: admin.to_path_buf(),
+    };
+    if !admin.join("HEAD").exists() {
+        std::fs::create_dir_all(admin)?;
+        let output = Command::new("git")
+            .args([
+                "init",
+                "--bare",
+                "--quiet",
+                "--template=",
+                &format!("--object-format={object_format}"),
+            ])
+            .arg(path_argument(admin))
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "initialize build Git: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let objects = String::from_utf8(run(
+        source,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "objects",
+        ],
+        None,
+    )?)?;
+    let object_path = path_argument(Path::new(objects.trim()));
+    let object_path = object_path
+        .to_str()
+        .context("Git object path is not UTF-8")?;
+    ensure!(
+        !object_path.contains(['\n', '\r']),
+        "newline in Git object path"
+    );
+    std::fs::create_dir_all(admin.join("objects/info"))?;
+    std::fs::write(
+        admin.join("objects/info/alternates"),
+        format!("{object_path}\n"),
+    )?;
+    for (key, value) in [
+        ("core.bare", "false"),
+        ("core.autocrlf", "false"),
+        ("core.symlinks", "false"),
+        ("core.logAllRefUpdates", "false"),
+        ("gc.auto", "0"),
+        ("maintenance.auto", "false"),
+        ("index.version", "4"),
+        (
+            "core.filemode",
+            if cfg!(windows) { "false" } else { "true" },
+        ),
+    ] {
+        run(&view, &["config", "--local", key, value], None)?;
+    }
+    let worktree = path_argument(checkout);
+    run(
+        &view,
+        &[
+            "config",
+            "--local",
+            "core.worktree",
+            worktree.to_str().context("non-UTF8 build path")?,
+        ],
+        None,
+    )?;
+    let hooks = admin.join("disabled-hooks");
+    std::fs::create_dir_all(&hooks)?;
+    let hooks = path_argument(&hooks);
+    run(
+        &view,
+        &[
+            "config",
+            "--local",
+            "core.hooksPath",
+            hooks.to_str().context("non-UTF8 hooks path")?,
+        ],
+        None,
+    )?;
+    // Only ref names and OIDs are copied. Objects remain in the source's object database.
+    let mut refs = std::collections::BTreeMap::new();
+    for line in String::from_utf8(run(
+        source,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads",
+            "refs/tags",
+            "refs/remotes",
+        ],
+        None,
+    )?)?
+    .lines()
+    {
+        let (name, oid) = line.split_once(' ').context("invalid Git ref record")?;
+        refs.insert(name.to_string(), oid.to_string());
+    }
+    let previous = String::from_utf8(run(&view, &["for-each-ref", "--format=%(refname)"], None)?)?;
+    let mut updates = String::new();
+    for name in previous.lines() {
+        if !refs.contains_key(name) {
+            updates.push_str(&format!("delete {name}\n"));
+        }
+    }
+    for (name, oid) in refs {
+        updates.push_str(&format!("update {name} {oid}\n"));
+    }
+    if !updates.is_empty() {
+        run(&view, &["update-ref", "--stdin"], Some(updates.as_bytes()))?;
+    }
+    run(&view, &["update-ref", "--no-deref", "HEAD", base], None)?;
+    run(&view, &["read-tree", base], None)?;
+    let mut index = Vec::new();
+    for (path, entry) in changes {
+        let (mode, oid) = if let Some(entry) = entry {
+            let oid = if entry.source == "git" {
+                entry.oid.clone()
+            } else {
+                String::from_utf8(run(
+                    &view,
+                    &["hash-object", "-w", "--stdin"],
+                    Some(&content(entry)?),
+                )?)?
+                .trim()
+                .to_string()
+            };
+            (entry.mode.clone(), oid)
+        } else {
+            (
+                "0".into(),
+                "0".repeat(if object_format == "sha256" { 64 } else { 40 }),
+            )
+        };
+        index.extend_from_slice(format!("{mode} {oid}\t{path}\0").as_bytes());
+    }
+    if !index.is_empty() {
+        run(&view, &["update-index", "-z", "--index-info"], Some(&index))?;
+    }
+    let pointer = path_argument(admin);
+    std::fs::write(
+        checkout.join(".git"),
+        format!(
+            "gitdir: {}\n",
+            pointer.to_str().context("non-UTF8 build Git path")?
+        ),
+    )?;
+    Ok(view)
+}
+
+/// Remove inherited Git-directory/index overrides before launching build tools.
+pub fn clear_overrides(command: &mut Command) {
+    for key in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        command.env_remove(key);
+    }
+}

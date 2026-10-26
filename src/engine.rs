@@ -1306,6 +1306,21 @@ impl Engine {
             .map_err(|_| anyhow::anyhow!("build lock poisoned"))?;
         let dest = self.home.join("build").join(&ws.repo);
         self.materialize(ws, tree, &dest)?;
+        let revision = self.revision(&ws.head)?;
+        let repo = self.repo(&ws.repo)?;
+        let mut base = Tree::new();
+        let prefix = format!("t/{}/{}/", ws.repo, revision.base);
+        for (p, v) in self.scan(&prefix)? {
+            base.insert(p[prefix.len()..].into(), serde_json::from_slice(&v)?);
+        }
+        let changes = Self::tree_changes(&base, tree);
+        let admin = self.home.join("build-git").join(&ws.repo);
+        safe_ancestors(&admin)?;
+        safe_ancestors(&dest.join(".git"))?;
+        let mut reader = None;
+        git::prepare_build(&repo, &admin, &dest, &revision.base, &changes, |entry| {
+            self.bytes(&repo, entry, &mut reader)
+        })?;
         let cwd = if task.cwd.is_empty() {
             dest.clone()
         } else {
@@ -1324,9 +1339,13 @@ impl Engine {
             .envs(&task.env)
             .env("VWORK_WORKSPACE", &ws.id)
             .env("VWORK_REVISION", &ws.head)
+            .env("VWORK_BASE_COMMIT", &revision.base)
+            .env("VWORK_BUILD_ROOT", &dest)
+            .env("VWORK_GIT_DIR", &admin)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        git::clear_overrides(&mut cmd);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

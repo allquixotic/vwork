@@ -28,6 +28,10 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V9: GC retains live/forked/exported revisions and blobs; database reopens. Tests `garbage_collection`, `squash_reclaims_old_blobs`, `export_retention`.
 - V10: ZIP contains only Windows x64 binary plus allowlisted source/docs; no local state/secrets. Test `package_contents`.
 
+- V11: Build Git shares existing objects, owns HEAD/index/refs, reports the base commit and virtual dirtiness, and preserves source Git state. Test `build_git_metadata`.
+- V12: Package actions serialize with builds; npm dependencies and pip environments require matching inputs; Cargo targets are per project. Tests `package_workflows`, `package_input_changes`.
+- V13: Package-generated manifest/lock edits are reported for explicit import; virtual source never changes implicitly. Test `package_writeback`.
+
 # §T
 id|status|task|cites
 ---|---|---|---
@@ -35,6 +39,10 @@ T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V
 T2|x|Git export, merges, managed tasks and materialization|V4,V5,V6,V7,I.cli
 T3|x|Daemon, CLI, MCP, policy hook, Goose generator|V8,I.rpc,I.goose
 T4|x|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V8,V9,V10,I.release
+
+T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
+T6|~|Native package plans for npm, Cargo and pip|V7,V12,V13,I.rpc
+T7|.|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,I.release
 
 # §B
 id|date|cause|fix
