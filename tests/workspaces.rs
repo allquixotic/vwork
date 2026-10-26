@@ -328,6 +328,18 @@ fn protocol_and_hooks() -> Result<()> {
         "allow"
     );
     assert!(!protocol::tools(true).iter().any(|v| v["name"] == "shell"));
+    assert!(
+        protocol::tools(true)
+            .iter()
+            .any(|v| v["name"] == "vwork_package_run")
+    );
+    assert!(
+        !protocol::tools(true)
+            .iter()
+            .any(|v| v["name"] == "vwork_package_configure")
+    );
+    let denied = protocol::mcp_response(&json!({"id":3,"method":"tools/call","params":{"name":"vwork_package_configure","arguments":{}}}),Some("one"),|_,_| unreachable!()).unwrap();
+    assert_eq!(denied["error"]["code"], -32602);
     Ok(())
 }
 #[test]
@@ -650,12 +662,14 @@ fn build_git_metadata() -> Result<()> {
     )?;
     assert_eq!(clean["success"], true);
     assert_eq!(clean["stdout"].as_str().unwrap().trim(), "v9.8.7");
+    assert_eq!(clean["source_changes"], json!([]));
     f.write("one", "new-file", "virtual addition");
     let dirty = f.engine.call(
         "workspace_run_task",
         &json!({"workspace":"one","expected_revision":f.head("one"),"task":"describe"}),
     )?;
     assert_eq!(dirty["stdout"].as_str().unwrap().trim(), "v9.8.7-dirty");
+    assert_eq!(dirty["source_changes"], json!([]));
     f.engine.call(
         "task_set",
         &json!({"repo":"repo","name":"head","program":"git","args":["rev-parse","HEAD"]}),
@@ -677,5 +691,139 @@ fn build_git_metadata() -> Result<()> {
     assert_eq!(std::fs::read(f.root.join(".git/index"))?, original_index);
     assert_eq!(object_files(), original_objects);
     assert!(!f.root.join("new-file").exists());
+    f.write("one", "src/a.rs", "fn changed() {}\n");
+    f.engine.call(
+        "files_delete",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"path":"README.md"}),
+    )?;
+    let edits = f.engine.call(
+        "workspace_run_task",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"task":"describe"}),
+    )?;
+    assert_eq!(edits["stdout"].as_str().unwrap().trim(), "v9.8.7-dirty");
+    assert_eq!(edits["source_changes"], json!([]));
+    assert!(git(&build, &["diff", "--cached", "--name-status"]).contains("D\tREADME.md"));
+    assert_eq!(std::fs::read(f.root.join(".git/index"))?, original_index);
+    assert_eq!(object_files(), original_objects);
+    Ok(())
+}
+
+fn package_run(f: &Fixture, project: &str, action: &str) -> Result<Value> {
+    f.engine.call("package_run",&json!({"workspace":"one","expected_revision":f.head("one"),"project":project,"action":action}))
+}
+
+#[test]
+fn package_workflows() -> Result<()> {
+    let f = Fixture::new();
+    f.write(
+        "one",
+        "rust/Cargo.toml",
+        "[package]\nname='vwork-fixture'\nversion='0.1.0'\nedition='2021'\n",
+    );
+    f.write(
+        "one",
+        "rust/Cargo.lock",
+        "version = 4\n[[package]]\nname = \"vwork-fixture\"\nversion = \"0.1.0\"\n",
+    );
+    f.write(
+        "one",
+        "rust/src/lib.rs",
+        "#[test] fn passes() { assert_eq!(2+2,4); }\n",
+    );
+    f.write("one","rust/build.rs","fn main() { let r=std::process::Command::new(\"git\").args([\"rev-parse\",\"HEAD\"]).output().unwrap(); assert!(r.status.success()); assert_eq!(String::from_utf8(r.stdout).unwrap().trim(), std::env::var(\"VWORK_BASE_COMMIT\").unwrap()); }\n");
+    f.engine.call("package_configure",&json!({"repo":"repo","name":"rust","manager":"cargo","path":"rust","args":["+stable"],"offline":true}))?;
+    let result = package_run(&f, "rust", "test")?;
+    assert_eq!(result["success"], true, "{result}");
+    assert_eq!(result["source_changes"], json!([]));
+    assert!(f.home.join("targets/repo/rust").is_dir());
+    assert!(!f.root.join("rust").exists());
+    assert!(
+        f.engine.call("package_list", &json!({"repo":"repo"}))?["projects"]
+            .as_array()
+            .unwrap()
+            .len()
+            == 1
+    );
+    let result = package_run(&f, "rust", "clean")?;
+    assert_eq!(result["success"], true);
+    assert!(!f.home.join("targets/repo/rust").exists());
+    Ok(())
+}
+
+#[test]
+fn package_writeback() -> Result<()> {
+    let f = Fixture::new();
+    f.write("one","web/package.json",r#"{"name":"vwork-fixture","version":"1.0.0","private":true,"scripts":{"test":"node check.cjs"}}"#);
+    f.write(
+        "one",
+        "web/check.cjs",
+        "if (!process.env.VWORK_BASE_COMMIT) process.exit(2); console.log('npm fixture passed');\n",
+    );
+    f.engine.call(
+        "package_configure",
+        &json!({"repo":"repo","name":"web","manager":"npm","path":"web","offline":true}),
+    )?;
+    assert!(package_run(&f, "web", "test").is_err());
+    let head = f.head("one");
+    let install = package_run(&f, "web", "install")?;
+    assert_eq!(install["success"], true, "{install}");
+    assert_eq!(f.head("one"), head);
+    assert!(
+        install["package"]["input_changes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("web/package-lock.json"))
+    );
+    assert!(
+        package_run(&f, "web", "test").is_err(),
+        "new lock must be imported first"
+    );
+    f.engine.call("workspace_import",&json!({"workspace":"one","expected_revision":head,"source":install["checkout"],"paths":["web/package-lock.json"]}))?;
+    let test = package_run(&f, "web", "test")?;
+    assert_eq!(test["success"], true, "{test}");
+    assert!(
+        test["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("npm fixture passed")
+    );
+    f.write("one","web/package.json",r#"{"name":"vwork-fixture","version":"1.0.1","private":true,"scripts":{"test":"node check.cjs"}}"#);
+    assert!(
+        package_run(&f, "web", "test").is_err(),
+        "changed package inputs must invalidate installed state"
+    );
+    Ok(())
+}
+
+#[test]
+fn package_input_changes() -> Result<()> {
+    let f = Fixture::new();
+    f.write("one", "py/requirements.txt", "");
+    f.engine.call(
+        "package_configure",
+        &json!({"repo":"repo","name":"py","manager":"pip","path":"py","offline":true,"program":std::env::var("VWORK_TEST_PYTHON").ok()}),
+    )?;
+    assert!(package_run(&f, "py", "check").is_err());
+    let install = package_run(&f, "py", "install")?;
+    assert_eq!(install["success"], true, "{install}");
+    let check = package_run(&f, "py", "check")?;
+    assert_eq!(check["success"], true, "{check}");
+    let venv = f.home.join("environments/repo/py");
+    let python = vwork::packages::python_executable(&venv);
+    assert!(python.is_file());
+    assert!(!std::fs::symlink_metadata(&python)?.file_type().is_symlink());
+    std::fs::write(venv.join("old-dependency-marker"), "old")?;
+    f.write(
+        "one",
+        "py/requirements.txt",
+        "# changed dependency inputs\n",
+    );
+    assert!(package_run(&f, "py", "check").is_err());
+    let reinstall = package_run(&f, "py", "install")?;
+    assert_eq!(reinstall["success"], true, "{reinstall}");
+    assert!(!venv.join("old-dependency-marker").exists());
+    let clean = package_run(&f, "py", "clean")?;
+    assert_eq!(clean["success"], true);
+    assert!(!venv.exists());
     Ok(())
 }

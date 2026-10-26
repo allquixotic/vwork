@@ -1,4 +1,8 @@
-use crate::{git, model::*};
+use crate::{
+    git,
+    model::*,
+    packages::{self, Project, Step},
+};
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -10,6 +14,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, RwLock};
 use wait_timeout::ChildExt;
+
+enum BuildRequest {
+    Task(Task),
+    Package(Project, String),
+}
 
 const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records_v1");
 
@@ -379,8 +388,8 @@ impl Engine {
                 );
                 let root = PathBuf::from(String::from_utf8(out.stdout)?.trim()).canonicalize()?;
                 ensure!(
-                    !self.home.starts_with(&root),
-                    "vwork home must be outside the registered checkout"
+                    !self.home.starts_with(&root) && !root.starts_with(&self.home),
+                    "vwork home and registered checkout must not overlap"
                 );
                 let out = Command::new("git")
                     .arg("-C")
@@ -491,6 +500,26 @@ impl Engine {
                 return Ok(
                     json!({"forgotten_revision":revision,"git_commit_retained":pin["commit"],"note":"only the database history pin was removed; Git commit/ref remain"}),
                 );
+            }
+            "package_configure" => {
+                let project: Project = serde_json::from_value(a.clone())?;
+                project.validate()?;
+                self.repo(&project.repo)?;
+                self.put(
+                    &format!("project/{}/{}", project.repo, project.name),
+                    &project,
+                )?;
+                return Ok(json!({"project":project.name,"actions":project.actions()}));
+            }
+            "package_list" => {
+                let repo = string(a, "repo")?;
+                self.repo(repo)?;
+                let mut projects = Vec::new();
+                for (_, value) in self.scan(&format!("project/{repo}/"))? {
+                    let project: Project = serde_json::from_slice(&value)?;
+                    projects.push(json!({"project":project,"actions":project.actions()}));
+                }
+                return Ok(json!({"projects":projects}));
             }
             "task_set" => {
                 let task: Task = serde_json::from_value(a.clone())?;
@@ -922,6 +951,17 @@ impl Engine {
             }
             "workspace_import" => self.import(&ws, a, &tree),
             "workspace_run_task" => self.run_task(&ws, a, &tree),
+            "package_run" => {
+                let name = string(a, "project")?;
+                valid_id(name)?;
+                let project: Project = self.get(&format!("project/{}/{name}", ws.repo))?;
+                self.run_build(
+                    &ws,
+                    a,
+                    &tree,
+                    BuildRequest::Package(project, string(a, "action")?.into()),
+                )
+            }
             _ => bail!("unknown operation: {op}"),
         }
     }
@@ -1293,13 +1333,23 @@ impl Engine {
     }
 
     fn run_task(&self, ws: &Workspace, a: &Value, tree: &Tree) -> Result<Value> {
+        let name = string(a, "task")?;
+        valid_id(name)?;
+        let task: Task = self.get(&format!("task/{}/{name}", ws.repo))?;
+        self.run_build(ws, a, tree, BuildRequest::Task(task))
+    }
+
+    fn run_build(
+        &self,
+        ws: &Workspace,
+        a: &Value,
+        tree: &Tree,
+        request: BuildRequest,
+    ) -> Result<Value> {
         ensure!(
             string(a, "expected_revision")? == ws.head,
             "revision conflict"
         );
-        let name = string(a, "task")?;
-        valid_id(name)?;
-        let task: Task = self.get(&format!("task/{}/{name}", ws.repo))?;
         let lock = self.build_lock(&ws.repo);
         let _guard = lock
             .lock()
@@ -1318,81 +1368,164 @@ impl Engine {
         safe_ancestors(&admin)?;
         safe_ancestors(&dest.join(".git"))?;
         let mut reader = None;
-        git::prepare_build(&repo, &admin, &dest, &revision.base, &changes, |entry| {
+        let view = git::prepare_build(&repo, &admin, &dest, &revision.base, &changes, |entry| {
             self.bytes(&repo, entry, &mut reader)
         })?;
-        let cwd = if task.cwd.is_empty() {
-            dest.clone()
-        } else {
-            dest.join(path(&task.cwd)?)
-        };
-        safe_ancestors(&cwd)?;
-        let timeout = task
-            .timeout_seconds
-            .unwrap_or(self.config.task_timeout_seconds)
-            .min(self.config.task_timeout_seconds);
-        ensure!(timeout > 0, "task timeout must be positive");
-        let run_id = id();
-        let mut cmd = Command::new(&task.program);
-        cmd.args(&task.args)
-            .current_dir(&cwd)
-            .envs(&task.env)
-            .env("VWORK_WORKSPACE", &ws.id)
-            .env("VWORK_REVISION", &ws.head)
-            .env("VWORK_BASE_COMMIT", &revision.base)
-            .env("VWORK_BUILD_ROOT", &dest)
-            .env("VWORK_GIT_DIR", &admin)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        git::clear_overrides(&mut cmd);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("start task executable {}", task.program))?;
-        #[cfg(windows)]
-        let job = match crate::job::Job::attach(&child) {
-            Ok(job) => job,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
+        let mut before = BTreeMap::new();
+        let mut package = None;
+        let (name, steps, cwd, mut env, timeout) = match request {
+            BuildRequest::Task(task) => (
+                task.name,
+                vec![Step::Command {
+                    program: task.program,
+                    args: task.args,
+                }],
+                dest.join(task.cwd),
+                task.env,
+                task.timeout_seconds
+                    .unwrap_or(self.config.task_timeout_seconds)
+                    .min(self.config.task_timeout_seconds),
+            ),
+            BuildRequest::Package(project, action) => {
+                for p in project.scoped_inputs(tree) {
+                    let content = tree
+                        .get(&p)
+                        .map(|e| self.bytes(&repo, e, &mut reader))
+                        .transpose()?;
+                    before.insert(p, content);
+                }
+                let fingerprint = packages::fingerprint(&project, &before)?;
+                let state_key = format!("package-state/{}/{}", project.repo, project.name);
+                let installed =
+                    self.get::<String>(&state_key).ok().as_deref() == Some(&fingerprint);
+                let plan = packages::plan(&project, &action, &self.home, &dest, tree, installed)?;
+                if plan.installs || plan.clears {
+                    let txn = self.db.begin_write()?;
+                    {
+                        txn.open_table(RECORDS)?.remove(state_key.as_str())?;
+                    }
+                    txn.commit()?;
+                }
+                let name = format!("{}/{action}", project.name);
+                package = Some((
+                    project,
+                    action,
+                    plan.installs,
+                    plan.clears,
+                    plan.environment,
+                    plan.artifacts,
+                    state_key,
+                ));
+                (
+                    name,
+                    plan.steps,
+                    plan.cwd,
+                    plan.env,
+                    self.config.task_timeout_seconds,
+                )
             }
         };
-        let max = self.config.max_output_bytes;
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-        let out_thread = std::thread::spawn(move || capture(stdout, max));
-        let err_thread = std::thread::spawn(move || capture(stderr, max));
-        let status = child.wait_timeout(std::time::Duration::from_secs(timeout))?;
-        let timed_out = status.is_none();
-        // End descendants even after successful parent exit so inherited pipes cannot hang.
-        #[cfg(windows)]
-        drop(job);
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        safe_ancestors(&cwd)?;
+        ensure!(timeout > 0, "task timeout must be positive");
+        env.insert("VWORK_WORKSPACE".into(), ws.id.clone());
+        env.insert("VWORK_REVISION".into(), ws.head.clone());
+        env.insert("VWORK_BASE_COMMIT".into(), revision.base.clone());
+        env.insert("VWORK_BUILD_ROOT".into(), dest.to_string_lossy().into());
+        env.insert("VWORK_GIT_DIR".into(), admin.to_string_lossy().into());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
+        let mut output = ProcessOutput::default();
+        for step in steps {
+            match step {
+                Step::Remove(path) => {
+                    safe_ancestors(&path)?;
+                    ensure!(
+                        path.starts_with(&self.home),
+                        "cleanup must stay inside managed state"
+                    );
+                    if path.exists() {
+                        std::fs::remove_dir_all(&path)?;
+                    }
+                }
+                Step::Command { program, args } => {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        output.success = false;
+                        output.timed_out = true;
+                        output.exit_code = None;
+                        break;
+                    }
+                    let next = execute_process(
+                        &program,
+                        &args,
+                        &cwd,
+                        &env,
+                        remaining,
+                        self.config.max_output_bytes,
+                    )?;
+                    output.append(next, self.config.max_output_bytes);
+                    if !output.success {
+                        break;
+                    }
+                }
+            }
         }
-        if timed_out {
-            let _ = child.kill();
+        let run_id = id();
+        let mut result = json!({"run":run_id,"workspace":ws.id,"revision":ws.head,"base_commit":revision.base,"task":name,"success":output.success,"exit_code":output.exit_code,"timed_out":output.timed_out,"stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"stdout_truncated":output.stdout_truncated,"stderr_truncated":output.stderr_truncated,"checkout":dest,"git_dir":admin,"timestamp":now()});
+        let mut physical = BTreeMap::new();
+        let mut input_changes = Vec::new();
+        for (path, old) in &before {
+            let file = dest.join(path);
+            safe_ancestors(&file)?;
+            let content = if file.exists() {
+                ensure!(file.is_file(), "package input became a directory: {path}");
+                let mut bytes = Vec::new();
+                std::fs::File::open(file)?
+                    .take(self.config.max_file_bytes as u64 + 1)
+                    .read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() <= self.config.max_file_bytes,
+                    "package input exceeds max_file_bytes: {path}"
+                );
+                Some(bytes)
+            } else {
+                None
+            };
+            if content != *old {
+                input_changes.push(path.clone());
+            }
+            physical.insert(path.clone(), content);
         }
-        let status = if let Some(status) = status {
-            status
-        } else {
-            child.wait()?
-        };
-        let out = out_thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("output thread failed"))??;
-        let err = err_thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("output thread failed"))??;
-        // Store only bounded output, never an unbounded log on the constrained disk.
-        let result = json!({"run":run_id,"workspace":ws.id,"revision":ws.head,"task":name,"success":status.success()&&!timed_out,"exit_code":status.code(),"timed_out":timed_out,"stdout":String::from_utf8_lossy(&out.0),"stderr":String::from_utf8_lossy(&err.0),"stdout_truncated":out.1,"stderr_truncated":err.1,"checkout":dest,"timestamp":now()});
+        let mut changed: BTreeSet<String> = String::from_utf8(git::run(
+            &view,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--name-only",
+                "-z",
+            ],
+            None,
+        )?)?
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect();
+        changed.extend(input_changes.iter().cloned());
+        result["source_changes_truncated"] = json!(changed.len() > self.config.max_results);
+        result["source_changes"] = json!(
+            changed
+                .into_iter()
+                .take(self.config.max_results)
+                .collect::<Vec<_>>()
+        );
+        if let Some((project, action, installs, _clears, environment, artifacts, state_key)) =
+            package
+        {
+            if installs && output.success {
+                self.put(&state_key, &packages::fingerprint(&project, &physical)?)?;
+            }
+            result["package"] = json!({"project":project.name,"manager":project.manager,"action":action,"environment":environment,"artifacts":artifacts,"input_changes":input_changes,"import_instruction":"Use workspace_import with returned checkout, revision and explicit source_changes paths before another task if changes should be retained."});
+        }
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(RECORDS)?;
@@ -1584,4 +1717,109 @@ fn capture(mut input: impl Read, max: usize) -> std::io::Result<(Vec<u8>, bool)>
         truncated |= take < n;
     }
     Ok((out, truncated))
+}
+
+struct ProcessOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    success: bool,
+    exit_code: Option<i32>,
+    timed_out: bool,
+}
+impl Default for ProcessOutput {
+    fn default() -> Self {
+        Self {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+            success: true,
+            exit_code: Some(0),
+            timed_out: false,
+        }
+    }
+}
+impl ProcessOutput {
+    fn append(&mut self, next: Self, max: usize) {
+        let out = next.stdout.len().min(max.saturating_sub(self.stdout.len()));
+        self.stdout.extend_from_slice(&next.stdout[..out]);
+        let err = next.stderr.len().min(max.saturating_sub(self.stderr.len()));
+        self.stderr.extend_from_slice(&next.stderr[..err]);
+        self.stdout_truncated |= next.stdout_truncated || out < next.stdout.len();
+        self.stderr_truncated |= next.stderr_truncated || err < next.stderr.len();
+        self.success = next.success;
+        self.exit_code = next.exit_code;
+        self.timed_out = next.timed_out;
+    }
+}
+fn execute_process(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    env: &BTreeMap<String, String>,
+    timeout: std::time::Duration,
+    max: usize,
+) -> Result<ProcessOutput> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(cwd)
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    git::clear_overrides(&mut cmd);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("start task executable {program}"))?;
+    #[cfg(windows)]
+    let job = match crate::job::Job::attach(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let out_thread = std::thread::spawn(move || capture(stdout, max));
+    let err_thread = std::thread::spawn(move || capture(stderr, max));
+    let status = child.wait_timeout(timeout)?;
+    let timed_out = status.is_none();
+    #[cfg(windows)]
+    drop(job);
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as i32), libc::SIGKILL);
+    }
+    if timed_out {
+        let _ = child.kill();
+    }
+    let status = if let Some(status) = status {
+        status
+    } else {
+        child.wait()?
+    };
+    let out = out_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("output thread failed"))??;
+    let err = err_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("output thread failed"))??;
+    Ok(ProcessOutput {
+        stdout: out.0,
+        stderr: err.0,
+        stdout_truncated: out.1,
+        stderr_truncated: err.1,
+        success: status.success() && !timed_out,
+        exit_code: status.code(),
+        timed_out,
+    })
 }

@@ -31,6 +31,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V11: Build Git shares existing objects, owns HEAD/index/refs, reports the base commit and virtual dirtiness, and preserves source Git state. Test `build_git_metadata`.
 - V12: Package actions serialize with builds; npm dependencies and pip environments require matching inputs; Cargo targets are per project. Tests `package_workflows`, `package_input_changes`.
 - V13: Package-generated manifest/lock edits are reported for explicit import; virtual source never changes implicitly. Test `package_writeback`.
+- V14: Build source-change reports compare content against the virtual index; a rebuilt stat cache alone never marks files changed. Tests `build_git_metadata`, `package_workflows`.
 
 # §T
 id|status|task|cites
@@ -41,8 +42,8 @@ T3|x|Daemon, CLI, MCP, policy hook, Goose generator|V8,I.rpc,I.goose
 T4|x|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V8,V9,V10,I.release
 
 T5|x|Borrowed-object Git metadata for build checkout|V6,V7,V11,I.cli
-T6|~|Native package plans for npm, Cargo and pip|V7,V12,V13,I.rpc
-T7|.|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,I.release
+T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
+T7|~|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,I.release
 
 # §B
 id|date|cause|fix
@@ -52,3 +53,5 @@ B2|2026-10-26|Blanket symlink-ancestor rejection blocked macOS system /var tempo
 B3|2026-10-26|Strict Clippy rejected nested conditionals|Use let-chain conditionals; retain strict CI lint
 B4|2026-10-26|Git for Windows rejects Rust canonical verbatim paths|Normalize only Git-bound path arguments, including UNC paths; retain native canonical paths for filesystem safety; regression git_path_arguments
 B5|2026-10-26|HTTP client's default configuration inherits proxy environment and prefix checks do not validate URL authority|Disable proxies for loopback RPC and parse exact SocketAddr; daemon test covers bad proxy and userinfo URL
+B6|2026-10-26|Mac's standalone Python copied executable cannot locate libpython even with direct venv --copies|Select a compatible installed interpreter through project program and VWORK_TEST_PYTHON; document prerequisite
+B7|2026-10-26|Git diff-files reports empty stat-cache entries as changed after private index reconstruction|Use content-aware git diff, disable external diff/textconv, assert unchanged report (V14)

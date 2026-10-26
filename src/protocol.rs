@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub const INSTRUCTIONS: &str = "You are working in a vwork virtual workspace. Use vwork_files_read/list/glob/search and vwork_workspace_info/status/diff/history instead of shell, grep, rg, find, cat, or native Git. Virtual changes are not files in the original checkout. Before editing, obtain the current revision; pass it as expected_revision. On revision conflict, reread and reconcile, never blindly retry. vwork_files_apply_patch takes an atomic array of full-file replacements or deletions, not a unified diff. Use vwork_workspace_run_task for configured builds/tests; report the exact tested revision and exit status. Use vwork_workspace_export only when the user needs physical files, then vwork_workspace_import with explicit paths to bring changes back. Never claim a build passed unless its tool result says success. Forks share immutable history. Merge reports conflicts without partial changes. Tasks and global maintenance are configured outside model tools by the human CLI.";
+pub const INSTRUCTIONS: &str = "You are working in a vwork virtual workspace. Use vwork_files_read/list/glob/search and vwork_workspace_info/status/diff/history instead of shell, grep, rg, find, cat, or native Git. Virtual changes are not files in the original checkout. Before editing, obtain the current revision; pass it as expected_revision. On revision conflict, reread and reconcile, never blindly retry. vwork_files_apply_patch takes an atomic array of full-file replacements or deletions, not a unified diff. Use vwork_package_list/run for configured npm/Cargo/pip actions and vwork_workspace_run_task for other configured builds/tests. Both share one build checkout per repo; report the exact tested revision and exit status. Native Git there has a private index and borrowed objects: HEAD is the base commit, virtual edits appear staged and dirty. Import needed source_changes with explicit paths and returned revision before any subsequent build can overwrite them; never import dependency trees, environments or build caches. Use vwork_workspace_export only when the user needs physical files. Never claim a build passed unless its tool result says success. Forks share immutable history. Merge reports conflicts without partial changes. Tasks, package projects and global maintenance are configured outside model tools by the human CLI.";
 
 pub fn tools(bound: bool) -> Vec<Value> {
     let mut out = Vec::new();
@@ -216,6 +216,23 @@ pub fn tools(bound: bool) -> Vec<Value> {
         "workspace_import",
         "Import explicitly named edited/deleted files from this workspace's managed export. Unknown files are never imported automatically.",
         vec![w, e, ("source", "string", true), ("paths", "strings", true)],
+        false,
+    );
+    add(
+        "package_list",
+        "List human-configured npm, Cargo and pip projects and their allowed actions.",
+        vec![("repo", "string", true)],
+        true,
+    );
+    add(
+        "package_run",
+        "Run a configured package action in the serialized build checkout. Returns manifest/lockfile changes for explicit workspace_import; never mutates virtual source automatically.",
+        vec![
+            w,
+            e,
+            ("project", "string", true),
+            ("action", "string", true),
+        ],
         false,
     );
     add(

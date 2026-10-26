@@ -40,16 +40,7 @@ pub fn command(repo: &Repository) -> Command {
         .arg("--git-dir")
         .arg(path_argument(&repo.git_dir));
     // Never inherit caller index/worktree overrides or interactive Git behavior.
-    for key in [
-        "GIT_INDEX_FILE",
-        "GIT_WORK_TREE",
-        "GIT_DIR",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ] {
-        cmd.env_remove(key);
-    }
+    clear_overrides(&mut cmd);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd
 }
