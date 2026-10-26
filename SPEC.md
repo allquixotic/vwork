@@ -58,3 +58,5 @@ B6|2026-10-26|Mac's standalone Python copied executable cannot locate libpython 
 B7|2026-10-26|Git diff-files reports empty stat-cache entries as changed after private index reconstruction|Use content-aware git diff, disable external diff/textconv, assert unchanged report (V14)
 B8|2026-10-26|Windows Python ensurepip rejects the NT verbatim environment path passed by Rust|Normalize package-tool path arguments and environment values while retaining canonical paths for internal IO (V15)
 B9|2026-10-26|Regression fixture's generic im map left string conversion ambiguous|Use explicit String constructor; V15 fixture retained
+B10|2026-10-26|Azure trust used legacy name-only subject while new repository emits immutable owner/repository IDs|Match observed GitHub OIDC subject to verified repository IDs; retain environment/tag restrictions; one-time identity provisioning fix
+B11|2026-10-26|Hosted Windows runner may omit PSGallery registration required by Azure signing action|Register default repository before signing; preserve failed tags and allow stable +build.N retries; publication still requires valid timestamped signature

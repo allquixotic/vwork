@@ -35,7 +35,7 @@ jobs:
         run: |
           git merge-base --is-ancestor $env:GITHUB_SHA origin/main
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -c "import os,tomllib; assert os.environ['GITHUB_REF_NAME'] == 'v'+tomllib.load(open('Cargo.toml','rb'))['package']['version']"
+          python -c "import os,re,tomllib; base='v'+tomllib.load(open('Cargo.toml','rb'))['package']['version']; assert re.fullmatch(re.escape(base)+r'(?:\+build\.[1-9]\d*)?',os.environ['GITHUB_REF_NAME'])"
       - name: Validate
         shell: pwsh
         env:
@@ -55,6 +55,13 @@ jobs:
           client-id: ${{ secrets.AZURE_ARTIFACT_SIGNING_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_ARTIFACT_SIGNING_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_ARTIFACT_SIGNING_SUBSCRIPTION_ID }}
+      - name: Ensure Azure signing module repository exists
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default -ErrorAction Stop
+          }
+          Get-PSRepository -Name PSGallery -ErrorAction Stop | Format-Table Name, SourceLocation
       - name: Sign Windows executable
         uses: azure/trusted-signing-action@1d365fec12862c4aa68fcac418143d73f0cea293 # v0.5.11
         with:

@@ -32,6 +32,14 @@ or long-lived Azure client secret is stored in GitHub. Signing or verification
 failure prevents publication; there is no unsigned fallback. An organization's
 application-control policy may still require its normal software approval.
 
+The OIDC subject includes immutable owner/repository IDs:
+`repo:allquixotic@322644/vwork@1434741335:environment:azure-artifact-signing`.
+Match Azure trust to the actual token subject, audience and issuer; do not assume
+the legacy name-only format for new repositories. CI registers PSGallery when
+the hosted runner lacks it, before Azure's pinned signing action installs its
+module. A failed tag stays unchanged; stable `vVERSION+build.N` tags permit a new
+packaging attempt without changing the executable's application version.
+
 The first release is also mirrored to the owner's public S3 release bucket using
 the explicitly requested ship-to-aws procedure. That upload is performed outside
 GitHub Actions with dedicated local credentials; no AWS keys are in this repo or
