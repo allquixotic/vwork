@@ -43,3 +43,29 @@ Protocol tests exercise the actual stdio bridge and authenticated daemon; hook
 tests verify routing decisions. A live Goose/LLM conversation and the corporate
 AVD policy environment require the consumer smoke test in `goose.md`. They are
 not simulated or claimed as verified here.
+
+## Published artifact
+
+- [Final source CI, Windows and macOS](https://github.com/allquixotic/vwork/actions/runs/40374269796): passed.
+- [Windows release workflow](https://github.com/allquixotic/vwork/actions/runs/40374319348): passed, including native `start`, `doctor` and `stop`.
+- [Release v0.1.0](https://github.com/allquixotic/vwork/releases/tag/v0.1.0).
+- [Verified S3 copy](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip).
+
+The ZIP is 3,131,804 bytes, with 37 entries and one executable:
+`vwork/bin/vwork.exe` (7,220,224 bytes). Its PE machine type is x86_64.
+CRC validation and the published SHA256SUMS file match. The executable imports
+Windows system DLLs; it does not import a separate Visual C++ runtime or zstd DLL.
+No macOS or Linux executable is included.
+
+SHA-256:
+
+```text
+8d099896c65e9d06066c68b70cd50a229330f96b5e72a8d30ac44d755b5e20c7
+```
+
+The ship-to-aws upload used REDUCED_REDUNDANCY storage. Anonymous HEAD and full
+HTTPS download passed size/hash verification; anonymous bucket listing was denied.
+
+The final local cleanup probe dropped 100 synthetic workspace references in
+0.884 seconds. As with the creation measurements, this is one small local test,
+not a guarantee for another filesystem or workload.

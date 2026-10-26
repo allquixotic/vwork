@@ -34,7 +34,7 @@ id|status|task|cites
 T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V2,V3,V4,V5,I.storage
 T2|x|Git export, merges, managed tasks and materialization|V4,V5,V6,V7,I.cli
 T3|x|Daemon, CLI, MCP, policy hook, Goose generator|V8,I.rpc,I.goose
-T4|~|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V8,V9,V10,I.release
+T4|x|Integration tests, documentation, ZIP and CI release|V1,V2,V3,V4,V5,V6,V7,V8,V9,V10,I.release
 
 # §B
 id|date|cause|fix

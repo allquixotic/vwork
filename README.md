@@ -19,7 +19,9 @@ the executable. Workstation execution policy must permit your binary to run.
 ## Get it
 
 Download `vwork-windows-x64.zip` from
-[GitHub Releases](https://github.com/allquixotic/vwork/releases/latest).
+[GitHub Releases](https://github.com/allquixotic/vwork/releases/latest), or use the
+[S3 mirror](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip).
+The v0.1.0 ZIP is 3,131,804 bytes; both copies have the same SHA-256.
 Extract it into a user-writable folder. The program is `vwork/bin/vwork.exe`; the
 ZIP also contains source, documentation, examples and build workflows.
 
