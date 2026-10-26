@@ -14,7 +14,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - I.rpc: authenticated loopback JSON API; stdio MCP bridge with workspace binding.
 - I.storage: versioned redb tables for repositories, immutable revisions, workspaces, base manifests, blobs, tasks.
 - I.goose: generated configuration fragment, recipe, agent instructions, optional native policy hook.
-- I.release: tagged GitHub Windows x64 ZIP with executable, source, docs, templates; matching public S3 copy.
+- I.release: tagged GitHub Windows x64 ZIP with executable, source, docs, templates; public S3 upload only on explicit `ship-to-aws` invocation.
 
 # §V
 - V1: Workspace forks share immutable revisions; writes never change siblings or Git base. Test `fork_isolation_and_reopen`.
@@ -39,9 +39,9 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V19: Read-only MCP storage info ! report shared manifests/blobs and per-workspace/revision records without probe mutations; same registered repo+commit ! reuse base manifest; identical edits ! reuse daemon blobs. Test `v19_storage_sharing`.
 - V20: MCP repository setup ! structured clone/register only; clones ! redb-owned objects/refs; bounded temporary transport staging; no persistent checkout; no overwrite; registration publication ! unique ID transaction; failures ! no registered partial clone. Tests `v20_repository_setup`, `v20_clone_failure_preserves_paths`, `v20_registration_is_atomic`.
 
-- V21: Register/clone import all Git objects/refs into redb via git2; reads/history/commits work after source removal; legacy registration migrates before use without modifying source. Test `v21_redb_owns_git`, `v21_legacy_migration`.
-- V22: Temporary copies ! journaled ownership, bounded count/TTL, explicit release/renew, startup and periodic expiry cleanup; active jobs protected; failed cleanup retained for retry; preserve tracked source edits as recovery snapshot before automatic removal. Tests `v22_temporary_lifecycle`, `v22_temporary_recovery`, `v22_cleanup_ownership`.
-- V23: uv/CDK ! structured configured package actions over temporary copies; report completion, revision, lease and changes; no implicit virtual writeback or CDK deployment. Test `v23_uv_cdk_plans`.
+- V21: Register/clone import all Git objects/refs into redb via git2; reads/history/commits work after source removal; legacy registration migrates before use without modifying source; shared payloads retain per-repository membership. Tests `v21_redb_owns_git`, `v21_legacy_migration`, `v21_clone_transport`, `v21_import_batches`, `v21_shared_objects_keep_repository_membership`.
+- V22: Temporary copies ! journaled ownership, bounded count/TTL, explicit release/renew, startup and periodic expiry cleanup; active jobs protected; failed cleanup retained for retry; preserve bounded nonignored source edits as recovery snapshot before automatic removal. Tests `v22_temporary_lifecycle`, `v22_temporary_recovery`, `v22_cleanup_ownership`, `v22_temporary_bounds_and_active_job`, `v22_legacy_build_cleanup`, `v22_recovery_limit_preserves_copy`, `v22_periodic_cleanup`.
+- V23: uv/CDK ! structured configured package actions over temporary copies; report completion, revision, lease and changes; no implicit virtual writeback or CDK deployment. Tests `v23_uv_cdk_plans`, `v23_uv_cdk_execution`.
 
 # §T
 id|status|task|cites
@@ -56,10 +56,10 @@ T6|x|Native package plans for npm, Cargo and pip|V7,V12,V13,V14,I.rpc
 T7|x|Docs, cross-platform validation and Windows release|V10,V11,V12,V13,V15,I.release
 T8|x|Automatic MCP daemon lifecycle, bounded concurrent startup, opt-out and hook matching; signed Windows CI release|V8,V10,V16,V17,I.rpc,I.goose,I.release
 T9|~|Suppress Windows helper consoles; expose storage-sharing evidence to MCP; signed Windows release|V8,V10,V18,V19,I.rpc,I.goose,I.release
-T10|~|Model-visible clone/register with shared Git objects in redb; preserve other administration boundaries|V4,V8,V18,V20,I.rpc,I.goose
+T10|x|Model-visible clone/register with shared Git objects in redb; preserve other administration boundaries|V4,V8,V18,V20,I.rpc,I.goose
 
-T11|~|redb Git object backend, migration, library Git operations|V1,V3,V6,V11,V19,V20,V21,I.storage
-T12|~|Recoverable leased temporary copies and uv/CDK package actions|V4,V7,V9,V12,V13,V22,V23,I.rpc,I.goose
+T11|x|redb Git object backend, migration, library Git operations|V1,V3,V6,V11,V19,V20,V21,I.storage
+T12|x|Recoverable leased temporary copies and uv/CDK package actions|V4,V7,V9,V12,V13,V22,V23,I.rpc,I.goose
 
 # §B
 id|date|cause|fix

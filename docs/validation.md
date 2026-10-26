@@ -211,16 +211,31 @@ The final local cleanup probe dropped 100 synthetic workspace references in
 0.884 seconds. As with the creation measurements, this is one small local test,
 not a guarantee for another filesystem or workload.
 
-## 0.3.0 implementation validation (in progress)
+## 0.3.0 — redb Git storage and temporary copies
 
-- Baseline Windows `v21_redb_owns_git` failed after source removal; replacement
-  redb object backend passes reads, history, commits and reopen without source.
+- [Final source CI 40418648903](https://github.com/allquixotic/vwork/actions/runs/40418648903)
+  passed formatting, strict Clippy and all **50 Windows / 49 macOS integration
+  tests** for `050c1972af36a469bd16607529f9b24d5af44092`, including the Git
+  membership regression and real offline uv sync/check and CDK synth/list fixtures.
+- Baseline Windows `v21_redb_owns_git` failed after source removal; the redb object
+  backend now passes reads, history, commits and reopen without the original Git
+  store. Tests also cover legacy migration, libgit2 clone transport, import batches
+  and deduplicated objects retaining repository membership. The membership test
+  failed before the fix and now passes with a native Git export of a reused blob.
 - Baseline temporary-copy tests failed with unknown operation. Windows regressions
-  now pass create/renew/release, ownership protection, expiry recovery, quota and
-  active-job protection, legacy registration migration and old-build reclamation.
-- Baseline uv/CDK plan test rejected uv as unknown manager; new structured plans
-  pass, including refusal to expose CDK deployment actions.
-- Strict local formatting/Clippy and cross-compilation pass. No tests or GUI ran
-  on Sean's Mac. Native tests ran on games. The source-package test requires its
-  source tree and full tool fixtures are enabled in CI, not the copied test EXE.
-- CI and signed release verification will be recorded after their completion.
+  now pass create/renew/release, ownership protection, expiry recovery, copy limits,
+  active-job protection, old-build reclamation and deliberate recovery-limit
+  failure without data loss. Eight real-daemon tests passed on games, including
+  periodic expiry deletion without any subsequent model request.
+- Baseline uv/CDK plan test rejected uv as an unknown manager. Structured plans
+  now pass, including refusal to expose CDK deployment actions. The actual-tool
+  CI fixture verifies lease-local outputs, explicit uv.lock import, deletion on
+  release and invalidation of installed state when a new lease is allocated.
+- Strict local formatting/Clippy and Windows cross-compilation pass. No tests or
+  GUI ran on Sean's Mac. The final copied Windows workspace suite passed 38 tests;
+  four source/native-package tests were filtered and the real uv/CDK fixture is
+  enabled in CI, not the copied EXE. Hosted CI runs the complete suite.
+- Corporate AVD policy, a live Goose conversation, external credential helpers
+  and arbitrary third-party build scripts are outside these fixtures. Global
+  package caches are not lease-owned; temporary copies have count/TTL limits, not
+  an operating-system disk quota. Cleanup errors remain visible for retry.
