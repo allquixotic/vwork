@@ -529,6 +529,25 @@ impl Engine {
             _ => {}
         }
         let ws = self.workspace(string(a, "workspace")?)?;
+        // Dropping a reference must not load a potentially enormous source manifest.
+        if op == "workspace_drop" {
+            let expected = string(a, "expected_revision")?;
+            let txn = self.db.begin_write()?;
+            {
+                let mut t = txn.open_table(RECORDS)?;
+                let current: Workspace = serde_json::from_slice(
+                    t.get(key("w", &ws.id).as_str())?
+                        .context("not found")?
+                        .value(),
+                )?;
+                ensure!(current.head == expected, "revision conflict");
+                t.remove(key("w", &ws.id).as_str())?;
+            }
+            txn.commit()?;
+            return Ok(
+                json!({"dropped":ws.id,"space_reclamation":"run gc; compact database while daemon stopped"}),
+            );
+        }
         let repo = self.repo(&ws.repo)?;
         let (rev, tree) = self.snapshot(&ws)?;
         let mut reader = None;
@@ -881,24 +900,6 @@ impl Engine {
                 Ok(json!({"revision":updated.head}))
             }
             "workspace_merge" => self.merge(&ws, a, &tree),
-            "workspace_drop" => {
-                let expected = string(a, "expected_revision")?;
-                let txn = self.db.begin_write()?;
-                {
-                    let mut t = txn.open_table(RECORDS)?;
-                    let current: Workspace = serde_json::from_slice(
-                        t.get(key("w", &ws.id).as_str())?
-                            .context("not found")?
-                            .value(),
-                    )?;
-                    ensure!(current.head == expected, "revision conflict");
-                    t.remove(key("w", &ws.id).as_str())?;
-                }
-                txn.commit()?;
-                Ok(
-                    json!({"dropped":ws.id,"space_reclamation":"run gc; compact database while daemon stopped"}),
-                )
-            }
             "workspace_commit" => self.commit(&ws, a, &tree, &rev),
             "workspace_export" => {
                 let dest = resolved_physical_path(Path::new(string(a, "destination")?))?;
