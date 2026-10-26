@@ -78,7 +78,15 @@ fn run() -> Result<()> {
             transport::initialize(&home)?;
             println!("{}", home.display());
         }
-        Commands::Serve => transport::serve(&home)?,
+        Commands::Serve => {
+            // libgit2 requires these process-global options to be set before
+            // any threads exist. The standalone serve entrypoint owns that boundary.
+            unsafe {
+                git2::opts::set_server_connect_timeout_in_milliseconds(15_000)?;
+                git2::opts::set_server_timeout_in_milliseconds(30_000)?;
+            }
+            transport::serve(&home)?;
+        }
         Commands::Start => {
             println!(
                 "{}",

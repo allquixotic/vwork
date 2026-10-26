@@ -1592,3 +1592,44 @@ fn v22_recovery_limit_preserves_copy() -> Result<()> {
     assert_eq!(f.read("one", "README.md"), "base");
     Ok(())
 }
+
+#[test]
+fn v21_import_batches() -> Result<()> {
+    let f = Fixture::new();
+    let source = git2::Repository::open(&f.root)?;
+    let mut tree = source.treebuilder(None)?;
+    for n in 0..300 {
+        tree.insert(
+            format!("source-{n:03}.txt"),
+            source.blob(format!("contents {n}").as_bytes())?,
+            0o100644,
+        )?;
+    }
+    let tree = tree.write()?;
+    let parent = source.head()?.peel_to_commit()?;
+    let sig = source.signature()?;
+    source.commit(
+        Some("HEAD"),
+        &sig,
+        &sig,
+        "batched objects",
+        &source.find_tree(tree)?,
+        &[&parent],
+    )?;
+    f.engine
+        .call("repo_register", &json!({"repo":"batch","path":f.root}))?;
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"batch","workspace":"batch"}),
+    )?;
+    assert_eq!(f.read("batch", "source-299.txt"), "contents 299");
+    assert_eq!(f.read("batch", "source-000.txt"), "contents 0");
+    assert_eq!(f.read("one", "README.md"), "base");
+    assert!(
+        f.engine.call("storage_info", &json!({}))?["git_objects"]
+            .as_u64()
+            .unwrap()
+            > 300
+    );
+    Ok(())
+}

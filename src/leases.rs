@@ -32,7 +32,9 @@ impl Engine {
     }
     pub(crate) fn lease_value(&self, lease: &Lease) -> Value {
         let mut value = serde_json::to_value(lease).unwrap();
-        value["path"] = json!(self.lease_root(lease).join("tree"));
+        value["path"] = json!(crate::packages::process_path(
+            &self.lease_root(lease).join("tree")
+        ));
         value["instruction"] = json!(
             "Use only while necessary. Import wanted source changes explicitly, then call temporary_release with this lease ID. Renew before expiry while still using it. Expiry saves bounded nonignored source edits to a recovery workspace before removal; dependencies/caches are disposable."
         );

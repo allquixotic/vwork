@@ -396,6 +396,10 @@ impl Engine {
         for (key, bytes) in self.scan("r/")? {
             let mut repo: Repository = serde_json::from_slice(&bytes)?;
             if !repo.stored {
+                eprintln!(
+                    "Migrating Git objects for repository {} into redb...",
+                    repo.id
+                );
                 let source = git2::Repository::open(&repo.git_dir).with_context(|| {
                     format!(
                         "migration needs original repository at {}; restore it and retry",
@@ -410,6 +414,7 @@ impl Engine {
                     self.config.task_timeout_seconds,
                 )?;
                 self.put(&key, &repo)?;
+                eprintln!("Repository {} migration complete", repo.id);
             }
         }
         let tx = self.db.begin_write()?;
@@ -596,7 +601,7 @@ impl Engine {
         match op {
             "health" => {
                 return Ok(
-                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":2,"compression_level":self.config.compression_level}),
+                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":SCHEMA_VERSION,"compression_level":self.config.compression_level}),
                 );
             }
             "repo_register" | "repo_clone" => {
@@ -1703,7 +1708,7 @@ impl Engine {
             }
         }
         let run_id = id();
-        let mut result = json!({"run":run_id,"workspace":ws.id,"revision":ws.head,"base_commit":revision.base,"task":name,"success":output.success,"exit_code":output.exit_code,"timed_out":output.timed_out,"stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"stdout_truncated":output.stdout_truncated,"stderr_truncated":output.stderr_truncated,"checkout":dest,"git_dir":admin,"timestamp":now()});
+        let mut result = json!({"run":run_id,"workspace":ws.id,"revision":ws.head,"base_commit":revision.base,"task":name,"success":output.success,"exit_code":output.exit_code,"timed_out":output.timed_out,"stdout":String::from_utf8_lossy(&output.stdout),"stderr":String::from_utf8_lossy(&output.stderr),"stdout_truncated":output.stdout_truncated,"stderr_truncated":output.stderr_truncated,"checkout":packages::process_path(&dest),"git_dir":packages::process_path(&admin),"timestamp":now()});
         lease.expires_at = now().saturating_add(self.config.temporary_ttl_seconds);
         self.lease_save(&lease)?;
         result["temporary"] = self.lease_value(&lease);
@@ -1747,7 +1752,7 @@ impl Engine {
             if installs && output.success {
                 self.put(&state_key, &packages::fingerprint(&project, &physical)?)?;
             }
-            result["package"] = json!({"project":project.name,"manager":project.manager,"action":action,"environment":environment,"artifacts":artifacts,"input_changes":input_changes,"import_instruction":"Use workspace_import with returned checkout, revision and explicit source_changes paths before another task if changes should be retained."});
+            result["package"] = json!({"project":project.name,"manager":project.manager,"action":action,"environment":environment.as_ref().map(|p| packages::process_path(p)),"artifacts":packages::process_path(&artifacts),"input_changes":input_changes,"import_instruction":"Use workspace_import with returned checkout, revision and explicit source_changes paths before another task if changes should be retained."});
         }
         let txn = self.db.begin_write()?;
         {

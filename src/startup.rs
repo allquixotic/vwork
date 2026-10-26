@@ -34,7 +34,8 @@ fn try_lock(file: &File) -> Result<bool> {
 pub fn health(home: &Path, timeout: Duration) -> Result<Value> {
     let health = transport::connect_with_timeout(home, "health", &json!({}), timeout)?;
     ensure!(
-        health["schema"] == 1 && health["version"].as_str().is_some_and(|s| !s.is_empty()),
+        health["schema"].as_u64() == Some(crate::model::SCHEMA_VERSION)
+            && health["version"].as_str().is_some_and(|s| !s.is_empty()),
         "unexpected daemon health response"
     );
     Ok(health)

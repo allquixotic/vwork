@@ -11,17 +11,6 @@ pub const OBJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_obje
 pub const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_members_v1");
 
 pub fn initialize(db: &Database) -> Result<()> {
-    static NETWORK_LIMITS: std::sync::OnceLock<std::result::Result<(), String>> =
-        std::sync::OnceLock::new();
-    // Set once before vwork starts using libgit2; concurrent Engine opens wait.
-    NETWORK_LIMITS
-        .get_or_init(|| unsafe {
-            git2::opts::set_server_connect_timeout_in_milliseconds(15_000)
-                .and_then(|_| git2::opts::set_server_timeout_in_milliseconds(30_000))
-                .map_err(|e| e.to_string())
-        })
-        .as_ref()
-        .map_err(|e| anyhow::anyhow!(e.clone()))?;
     let tx = db.begin_write()?;
     tx.open_table(OBJECTS)?;
     tx.open_table(MEMBERS)?;

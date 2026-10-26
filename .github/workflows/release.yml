@@ -30,6 +30,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Package tool fixtures
+        run: |
+          python -m pip install uv
+          npm install --global aws-cdk
       - name: Verify tagged release source
         shell: pwsh
         run: |
@@ -40,6 +44,7 @@ jobs:
         shell: pwsh
         env:
           VWORK_TEST_PYTHON: python
+          VWORK_TEST_PACKAGE_TOOLS: "1"
         run: |
           cargo +stable fmt --all -- --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

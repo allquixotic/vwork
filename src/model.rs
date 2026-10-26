@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+
+pub const SCHEMA_VERSION: u64 = 2;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

@@ -20,7 +20,8 @@ provides sharing evidence without disposable probe workspaces.
 
 Upgrade: stop the daemon and back up its state. Keep original registered Git stores
 available for the first startup migration to schema 2. Original user checkouts are
-preserved. Older binaries cannot reopen schema 2; rollback requires the backup.
+preserved. Large first-run migrations can outlast a client startup wait; let the
+owner finish (progress is in daemon.log), then reconnect. Older binaries cannot reopen schema 2; rollback requires the backup.
 Replace vwork.exe, reconnect Goose, and regenerate/merge agent instructions and
 hook matchers while preserving local customizations. Developer may remain disabled;
 no Fastrock/Goose rebuild is needed. An old unfiltered Goose shell hook can still
