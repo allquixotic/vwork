@@ -1568,12 +1568,22 @@ impl Engine {
         let _guard = lock
             .lock()
             .map_err(|_| anyhow::anyhow!("build lock poisoned"))?;
-        let mut lease = if let Some(lease) = self
-            .leases()?
-            .into_iter()
-            .find(|l| l.build && l.repo == ws.repo && l.state == "ready")
-        {
-            self.recover_lease(&lease)?;
+        let selected = if let Some(id) = a["lease"].as_str() {
+            valid_id(id)?;
+            let lease: crate::leases::Lease = self.get(&format!("lease/{id}"))?;
+            ensure!(
+                lease.repo == ws.repo && lease.workspace == ws.id && lease.state == "ready",
+                "lease must be ready and belong to this workspace"
+            );
+            Some(lease)
+        } else {
+            self.leases()?
+                .into_iter()
+                .find(|l| l.build && l.repo == ws.repo && l.state == "ready")
+        };
+        let mut recovery_workspace = None;
+        let mut lease = if let Some(lease) = selected {
+            recovery_workspace = self.recover_lease(&lease)?;
             lease
         } else {
             self.create_lease(
@@ -1697,6 +1707,7 @@ impl Engine {
         lease.expires_at = now().saturating_add(self.config.temporary_ttl_seconds);
         self.lease_save(&lease)?;
         result["temporary"] = self.lease_value(&lease);
+        result["recovery_workspace"] = json!(recovery_workspace);
         let mut physical = BTreeMap::new();
         let mut input_changes = Vec::new();
         for (path, old) in &before {

@@ -214,10 +214,22 @@ impl Engine {
                 "recovery file too large: {path}; import or explicitly discard before release"
             );
             let mut content = Vec::new();
-            std::fs::File::open(physical)?
+            std::fs::File::open(&physical)?
                 .take(self.config.max_file_bytes as u64 + 1)
                 .read_to_end(&mut content)?;
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                if std::fs::metadata(&physical)?.permissions().mode() & 0o111 != 0 {
+                    "100755"
+                } else {
+                    "100644"
+                }
+            };
+            #[cfg(windows)]
+            let mode = old.map_or("100644", |e| e.mode.as_str());
             if let Some(entry) = old
+                && entry.mode == mode
                 && self.bytes(&repo, entry, &mut reader)? == content
             {
                 continue;
@@ -227,11 +239,14 @@ impl Engine {
                 total <= self.config.max_recovery_bytes && changes.len() < self.config.max_results,
                 "source recovery limit exceeded; import or explicitly discard before release"
             );
-            let (entry, compressed) =
-                self.encoded(content, old.map_or("100644", |e| e.mode.as_str()))?;
+            let (entry, compressed) = self.encoded(content, mode)?;
             blobs.insert(entry.oid.clone(), compressed);
             changes.insert(path, Some(entry));
         }
+        ensure!(
+            changes.len() <= self.config.max_results,
+            "source recovery limit exceeded; import or intentionally discard before release"
+        );
         if changes.is_empty() {
             return Ok(None);
         }

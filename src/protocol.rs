@@ -276,12 +276,13 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "package_run",
-        "Run a configured package action in the serialized build checkout. Returns manifest/lockfile changes for explicit workspace_import; never mutates virtual source automatically.",
+        "Run a configured package action in the serialized build checkout. Returns manifest/lockfile changes for explicit workspace_import; never mutates virtual source automatically. Pass lease to use an existing temporary copy for this workspace; import wanted physical edits before it is prepared again.",
         vec![
             w,
             e,
             ("project", "string", true),
             ("action", "string", true),
+            ("lease", "string", false),
         ],
         false,
     );
@@ -293,8 +294,8 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "workspace_run_task",
-        "Materialize a pinned virtual revision into the repository's serialized build checkout, run a configured task and return bounded output and tested revision.",
-        vec![w, e, ("task", "string", true)],
+        "Materialize a pinned virtual revision into the repository's serialized build checkout, run a configured task and return bounded output and tested revision. Optionally pass an existing lease for this workspace to avoid another copy; import wanted edits first because preparation restores the requested virtual snapshot.",
+        vec![w, e, ("task", "string", true), ("lease", "string", false)],
         false,
     );
     add(

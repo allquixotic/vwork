@@ -69,7 +69,9 @@ Read the workspace revision, list projects, then call an action:
 ```
 
 Use that object with `vwork_package_run` in MCP or `call package_run --json -` in
-the CLI. The returned `success`, exit code, stdout/stderr and tested `revision`
+the CLI. Pass optional `lease` to use an existing temporary copy for this workspace, avoiding
+a second copy. Import wanted physical edits before preparation restores the virtual
+snapshot. The returned `success`, exit code, stdout/stderr and tested `revision`
 have the same semantics as custom tasks. The global timeout covers all steps,
 including Python environment creation, and stream capture is bounded.
 

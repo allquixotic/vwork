@@ -54,9 +54,9 @@ Use forward slashes for all **virtual** paths, on every OS.
 | `workspace_export` | `destination`, optional `glob` | Explicit physical files |
 | `workspace_import` | `expected_revision`, `source`, `paths` | Explicit physical edits/deletions |
 | `task_list` | `repo` | Human-defined build/test tasks |
-| `workspace_run_task` | `expected_revision`, `task` | Serialized build of pinned snapshot |
+| `workspace_run_task` | `expected_revision`, `task`, optional `lease` | Serialized build of pinned snapshot |
 | `package_list` | `repo` | Configured npm/Cargo/pip/uv/CDK projects and allowed actions |
-| `package_run` | `expected_revision`, `project`, `action` | Serialized package action; reports physical source/input changes |
+| `package_run` | `expected_revision`, `project`, `action`, optional `lease` | Serialized package action; reports physical source/input changes |
 | `workspace_drop` | `expected_revision` | Remove one workspace reference |
 
 `temporary_list`, `temporary_renew`, `temporary_release`, `repo_register`, `repo_clone`, `storage_info`, `repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.

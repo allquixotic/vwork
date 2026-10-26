@@ -117,11 +117,31 @@ pub fn import(
     let odb = source.odb()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
     let mut failure = None;
+    // Bound writer hold time and amortize durable commits across small batches.
+    let mut transaction = Some(db.begin_write()?);
+    let mut batch_objects = 0usize;
+    let mut batch_bytes = 0usize;
     odb.foreach(|id| {
         let result = (|| -> Result<()> {
             ensure!(std::time::Instant::now() < deadline, "Git import timed out");
             let object = odb.read(*id)?;
-            git_store::write(db, &repo.id, *id, object.kind(), object.data(), level)
+            git_store::write_record(
+                transaction.as_ref().unwrap(),
+                &repo.id,
+                *id,
+                object.kind(),
+                object.data(),
+                level,
+            )?;
+            batch_objects += 1;
+            batch_bytes = batch_bytes.saturating_add(object.len());
+            if batch_objects >= 256 || batch_bytes >= 64 * 1024 * 1024 {
+                transaction.take().unwrap().commit()?;
+                transaction = Some(db.begin_write()?);
+                batch_objects = 0;
+                batch_bytes = 0;
+            }
+            Ok(())
         })();
         if let Err(error) = result {
             failure = Some(error);
@@ -140,6 +160,7 @@ pub fn import(
     if let Some(error) = failure {
         return Err(error);
     }
+    transaction.take().unwrap().commit()?;
     repo.refs.clear();
     for reference in source.references()? {
         let reference = reference?.resolve()?;

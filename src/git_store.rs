@@ -58,11 +58,24 @@ pub fn write(
     bytes: &[u8],
     level: i32,
 ) -> Result<()> {
+    let tx = db.begin_write()?;
+    write_record(&tx, repo, oid, kind, bytes, level)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(crate) fn write_record(
+    tx: &redb::WriteTransaction,
+    repo: &str,
+    oid: Oid,
+    kind: ObjectType,
+    bytes: &[u8],
+    level: i32,
+) -> Result<()> {
     ensure!(
         Oid::hash_object(kind, bytes)? == oid,
         "Git object hash mismatch"
     );
-    let tx = db.begin_write()?;
     {
         let mut table = tx.open_table(OBJECTS)?;
         let key = oid.to_string();
@@ -76,7 +89,6 @@ pub fn write(
         tx.open_table(MEMBERS)?
             .insert(format!("{repo}/{key}").as_str(), b"".as_slice())?;
     }
-    tx.commit()?;
     Ok(())
 }
 
@@ -103,6 +115,8 @@ struct Backend {
     level: i32,
 }
 
+// libgit2 C enums are signed on Windows and unsigned on Unix.
+#[allow(clippy::unnecessary_cast)]
 fn callback(f: impl FnOnce() -> Result<i32>) -> i32 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(Ok(code)) => code,

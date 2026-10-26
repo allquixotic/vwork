@@ -413,3 +413,60 @@ fn generated_goose_configuration() -> Result<()> {
     assert_eq!(decision["decision"], "block");
     Ok(())
 }
+
+#[test]
+fn v22_periodic_cleanup() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source_path = temp.path().join("source");
+    let source = git2::Repository::init(&source_path)?;
+    let blob = source.blob(b"base\n")?;
+    let tree = {
+        let mut tree = source.treebuilder(None)?;
+        tree.insert("README.md", blob, 0o100644)?;
+        tree.write()?
+    };
+    let signature = git2::Signature::now("Fixture", "fixture@example.invalid")?;
+    source.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "base",
+        &source.find_tree(tree)?,
+        &[],
+    )?;
+    drop(source);
+    let home = temp.path().join("state");
+    let _cleanup = StopHome(home.clone());
+    assert!(mcp_exchange(&home, &[])?.status.success());
+    vwork::transport::connect(
+        &home,
+        "repo_register",
+        &json!({"repo":"repo","path":source_path}),
+    )?;
+    vwork::transport::connect(
+        &home,
+        "workspace_create",
+        &json!({"workspace":"one","repo":"repo"}),
+    )?;
+    let info = vwork::transport::connect(&home, "workspace_info", &json!({"workspace":"one"}))?;
+    let lease = vwork::transport::connect(
+        &home,
+        "workspace_temporary",
+        &json!({"workspace":"one","expected_revision":info["revision"],"purpose":"periodic cleanup fixture","ttl_seconds":1}),
+    )?;
+    let path = std::path::PathBuf::from(lease["path"].as_str().unwrap());
+    assert!(path.join("README.md").exists());
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        !path.exists(),
+        "daemon must reap expired copies without another model request"
+    );
+    assert_eq!(
+        vwork::transport::connect(&home, "temporary_list", &json!({}))?["active"],
+        json!([])
+    );
+    Ok(())
+}

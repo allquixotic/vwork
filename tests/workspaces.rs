@@ -1224,6 +1224,20 @@ fn v22_temporary_lifecycle() -> Result<()> {
         git(&root, &["rev-parse", "HEAD"]),
         git(&f.root, &["rev-parse", "HEAD"])
     );
+    f.engine.call(
+        "task_set",
+        &json!({"repo":"repo","name":"in-copy","program":"git","args":["rev-parse","HEAD"]}),
+    )?;
+    let run = f.engine.call("workspace_run_task", &json!({"workspace":"one","expected_revision":f.head("one"),"task":"in-copy","lease":lease["id"]}))?;
+    assert_eq!(run["success"], true, "{run}");
+    assert_eq!(run["temporary"]["id"], lease["id"]);
+    assert_eq!(
+        f.engine.call("temporary_list", &json!({}))?["active"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     let renewed = f.engine.call(
         "temporary_renew",
         &json!({"lease":lease["id"],"ttl_seconds":120}),

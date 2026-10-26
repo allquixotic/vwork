@@ -29,7 +29,9 @@ lookup uses the daemon's inherited PATH, so restart it if your environment chang
 The model calls `vwork_workspace_run_task` with its workspace, current
 `expected_revision`, and `task: "test"`. vwork exports the pinned snapshot into
 a tracked temporary copy, runs the configured executable with argument-array semantics
-and returns success, exit code, timeout, captured output and revision.
+and returns success, exit code, timeout, captured output and revision. Pass optional
+`lease` to use an existing temporary copy for this workspace. Preparation restores
+the requested virtual snapshot, so import wanted physical edits first.
 
 For custom `.cmd`/`.bat` scripts, explicitly configure `cmd.exe` and arguments such as
 `["/D", "/C", "your-script.cmd"]`; do not assume a Unix shell. Task programs can

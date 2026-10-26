@@ -83,3 +83,4 @@ B16|2026-10-26|MCP lacked shared-storage counters and manifest-sharing contract,
 B17|2026-10-26|Repository registration checked ID existence outside publication, so six simultaneous requests all succeeded and could replace each other's registration|V20; per-ID setup serialization plus uniqueness check inside publication transaction; native concurrent-registration regression
 
 B18|2026-10-26|Legacy build directories could survive a redb migration and retain heavy outputs; interrupted moves could leave stale Git pointers|V22; journal/adopt owned directories, resume from moved marker, reconstruct private Git view before source recovery and cleanup
+B19|2026-10-26|libgit2 C error enum is unsigned on Unix but signed on Windows, making its required cross-platform ABI cast trigger Windows-only strict lint|Narrow documented unnecessary_cast allowance at the FFI boundary; retain strict checks on both targets
