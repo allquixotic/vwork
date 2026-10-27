@@ -77,8 +77,10 @@ Existing registrations migrate on first 0.3 startup, so keep their original Git
 stores available until migration succeeds. Back up stopped state before upgrading;
 older binaries cannot open schema 2. Original user checkouts are never deleted.
 
-Follow [Goose setup](docs/goose.md) to merge the generated configuration, disable
-native source tools, install the optional hook and start a session. **No Goose
+Follow [Goose setup](docs/goose.md) to merge the generated configuration, enable
+Developer alongside your other MCPs, and optionally install the narrow Git-creation
+hook. Repository work defaults to vwork; host reads, file edits and scripts remain
+available. Durable exports stay until you remove them. **No Goose
 source patch is required.** Give each independent agent its own workspace binding.
 
 ## How the pieces connect

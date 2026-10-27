@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub const INSTRUCTIONS: &str = "Work virtually in vwork. Use repo_list and reuse registrations. For user-requested setup, repo_register imports committed state from an absolute repository path; repo_clone imports a selected URL into redb. Use repo_fetch to refresh an existing registration from its saved source; supply source once for older imports if needed. Fetch never updates existing workspace snapshots; create a new workspace from the fetched reference when desired. All persistent Git objects, refs and source contents are in redb; no permanent source checkout. Use files_read/list/glob/search and workspace_info/status/diff/history instead of native filesystem or shell. Get the current revision before editing and pass expected_revision; reconcile conflicts. files_apply_patch accepts full-file replacements/deletions. Use package_list/run for configured npm/Cargo/pip/uv/CDK actions and workspace_run_task for other configured tools. External tools need files: package/task runs automatically use a tracked temporary copy and return its lease, expiry, exact revision, exit status and source_changes. Only request workspace_temporary when a specific filesystem-only tool cannot do its work virtually; explain why in purpose. Import wanted edits explicitly, then call temporary_release as soon as finished. Do not retain copies just in case. Use temporary_list to find forgotten copies and cleanup errors. Renew a lease before expiry if a tool still needs it. Expiry/startup cleanup saves bounded nonignored source changes into a separate recovery workspace and deletes the copy; dependencies, environments and build outputs are disposable. Save wanted artifacts before releasing. Never use discard_changes unless intentionally discarding those edits. Cleanup failures stay visible and block unlimited accumulation. Use workspace_export only for durable files the user explicitly wants to keep. Never claim success unless the tool reports success. Use storage_info for shared storage accounting; never create probe workspaces to measure sharing. Git objects deduplicate daemon-wide by object ID; edited blobs deduplicate by content hash. Base manifests share within a registration and commit. Forks share immutable history. Tasks, package configurations and global maintenance remain human CLI operations. CDK supports local synth/list actions, not deployments.";
+pub const INSTRUCTIONS: &str = include_str!("../examples/AGENTS.md");
 
 pub fn tools(bound: bool) -> Vec<Value> {
     let mut out = Vec::new();
@@ -282,7 +282,7 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "workspace_export",
-        "Explicitly materialize files to an empty absolute destination or a managed export. Native filesystem access; only use when needed.",
+        "Materialize an intentional durable copy to an empty absolute destination or an existing managed export. No expiry or automatic deletion. Prefer workspace_temporary for transient build/tool work.",
         vec![
             w,
             ("destination", "string", true),
@@ -335,54 +335,13 @@ pub fn tools(bound: bool) -> Vec<Value> {
     out
 }
 
-const NATIVE_TOOLS: &[&str] = &[
-    "shell",
-    "write",
-    "edit",
-    "tree",
-    "text_editor",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list_directory",
-    "search_files",
-    "execute",
-    "run_command",
-];
-const NATIVE_PREFIXES: &[&str] = &["developer__", "filesystem__", "terminal__"];
-
-/// Goose applies this regex before starting a command hook. Share the blocked
-/// families with the hook so virtual tool calls don't pay for a shell process.
+/// Filter before Goose spawns sh; reads, file edits and unrelated MCPs skip it.
 pub fn hook_matcher() -> String {
-    let exact = NATIVE_TOOLS
-        .iter()
-        .map(|s| regex::escape(s))
-        .collect::<Vec<_>>()
-        .join("|");
-    let prefixes = NATIVE_PREFIXES
-        .iter()
-        .map(|s| regex::escape(s))
-        .collect::<Vec<_>>()
-        .join("|");
-    format!("(?i)^(?:(?:{exact})$|(?:{prefixes}))")
+    crate::policy::matcher()
 }
 
 pub fn hook(payload: &Value) -> Value {
-    let name = payload
-        .get("tool_name")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    let lower = name.to_lowercase();
-    let blocked = !lower.starts_with("vwork_")
-        && (NATIVE_TOOLS.contains(&lower.as_str())
-            || NATIVE_PREFIXES
-                .iter()
-                .any(|prefix| lower.starts_with(prefix)));
-    if blocked {
-        json!({"decision":"block","reason":"This session uses virtual source. Use vwork_files_* and vwork_workspace_* tools; native tools see a different filesystem. Use vwork_package_list/run for configured npm/Cargo/pip actions, or vwork_workspace_run_task for other builds. Import needed source_changes explicitly before the next action."})
-    } else {
-        json!({"decision":"allow"})
-    }
+    crate::policy::hook(payload)
 }
 
 pub fn mcp_response(

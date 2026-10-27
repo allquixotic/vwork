@@ -253,31 +253,27 @@ fn v17_generated_hook_matcher() -> Result<()> {
     let rule = &hooks["hooks"]["PreToolUse"][0];
     let pattern = rule["matcher"].as_str().expect("filter before spawning sh");
     let matcher = regex::Regex::new(pattern)?;
-    assert_eq!(rule["hooks"][0]["on_failure"], "block");
+    assert_eq!(rule["hooks"][0]["on_failure"], "allow");
     for name in [
         "shell",
-        "write",
-        "edit",
-        "tree",
-        "text_editor",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "list_directory",
-        "search_files",
         "execute",
         "run_command",
         "developer__shell",
-        "developer__future_tool",
-        "filesystem__read",
         "terminal__execute",
         "DEVELOPER__SHELL",
-        "READ_FILE",
     ] {
         assert!(matcher.is_match(name), "must check {name}");
         assert_eq!(
-            vwork::protocol::hook(&json!({"tool_name":name}))["decision"],
+            vwork::protocol::hook(
+                &json!({"tool_name":name,"tool_input":{"command":"git clone origin copy"}})
+            )["decision"],
             "block"
+        );
+        assert_eq!(
+            vwork::protocol::hook(
+                &json!({"tool_name":name,"tool_input":{"command":"cat /any/file"}})
+            )["decision"],
+            "allow"
         );
     }
     for tool in vwork::protocol::tools(true) {
@@ -285,7 +281,25 @@ fn v17_generated_hook_matcher() -> Result<()> {
         assert!(!matcher.is_match(name));
         assert!(!matcher.is_match(&format!("vwork__{name}")));
     }
-    for name in ["skills__loadskill", "apps__list", "tom__read", "not_shell"] {
+    for name in [
+        "skills__loadskill",
+        "apps__list",
+        "tom__read",
+        "not_shell",
+        "tree",
+        "read_file",
+        "READ_FILE",
+        "write",
+        "edit",
+        "text_editor",
+        "list_directory",
+        "search_files",
+        "developer__future_tool",
+        "filesystem__read",
+        "filesystem__write_file",
+        "exa__web_search_exa",
+        "aws__execute",
+    ] {
         assert!(!matcher.is_match(name));
     }
     Ok(())
@@ -412,7 +426,7 @@ fn generated_goose_configuration() -> Result<()> {
     let config: Value = serde_yaml::from_str(&std::fs::read_to_string(
         output.join("config.fragment.yaml"),
     )?)?;
-    assert_eq!(config["extensions"]["developer"]["enabled"], false);
+    assert_eq!(config["extensions"]["developer"]["enabled"], true);
     assert_eq!(config["extensions"]["vwork"]["args"][4], "example");
     let hooks: Value =
         serde_json::from_slice(&std::fs::read(output.join("plugin/hooks/hooks.json"))?)?;
@@ -435,7 +449,7 @@ fn generated_goose_configuration() -> Result<()> {
     hook.stdin
         .take()
         .unwrap()
-        .write_all(br#"{"tool_name":"shell"}"#)?;
+        .write_all(br#"{"tool_name":"shell","tool_input":{"command":"git clone origin copy"}}"#)?;
     let result = hook.wait_with_output()?;
     assert!(result.status.success());
     let decision: Value = serde_json::from_slice(&result.stdout)?;

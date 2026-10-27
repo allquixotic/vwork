@@ -1,24 +1,21 @@
-vwork 0.3.1 adds incremental Git fetch, idle-time compaction and startup recovery checks.
+vwork 0.3.2 makes Goose flexible while keeping repository work virtual by default.
 
-- `repo_fetch` refreshes the same registration from its saved origin using libgit2.
-  Existing objects stay in redb; only new transfer packs temporarily use disk.
-  Refs publish atomically. Existing workspaces and private commits stay pinned;
-  create a new workspace from a fetched ref to use updated source. Older imports
-  may require `source` once. Optional pruning removes vanished upstream refs.
-- Automatic compaction evaluates hourly, only after more than five minutes of
-  Windows/macOS input inactivity and when no vwork operation is active. GC and
-  allocated-page statistics preflight the work; compaction requires more than
-  1 GB estimated free space. `vwork compact` and Fastrock 0.3.1 provide manual
-  access with the same threshold, without stopping the daemon.
-- Startup refuses empty/damaged replacements, snapshots before redb recovery,
-  verifies integrity before serving, and retains evidence after repairs. Full
-  validation temporarily needs one database-sized copy and may slow startup.
-  Unrecoverable corruption requires restoring an independent verified backup.
-- Copy/rename and status/diff MCP descriptions now distinguish their behavior.
+- Generated setup enables Developer for unrestricted host reads, host-file edits,
+  and one-off Bun/Python/shell scripts. Other MCPs, including Exa and AWS, remain
+  available through your existing Goose configuration.
+- MCP initialization, recipes and generated AGENTS.md share one concise policy.
+  Use vwork for repository work, leased temporary copies for filesystem-only
+  tools, and workspace_export for intentional durable copies. Exports remain
+  indefinite.
+- The optional hook redirects recognizable direct git clone/init/worktree-add
+  calls. It allows reads, ordinary edits and general scripts; hook failures also
+  allow calls. It is a best-effort detector, not a sandbox or filesystem monitor.
 
-Upgrade: stop vwork, back up its state, replace the executable, and restart.
-Existing schema-2 registrations/workspaces remain compatible. Reconnect Goose and
-regenerate/merge agent instructions for the new fetch tool. Upgrades from 0.2.x
-still need original registered Git stores for the one-time schema-2 import.
+Upgrade: stop vwork, back up its state, replace the executable and restart. Schema
+2 remains compatible. Regenerate setup, merge Developer/vwork into your Goose
+config while preserving other MCPs and credentials, replace the old vwork hint
+section and installed vwork-policy plugin, then start a new conversation. Leaving
+the old blanket-denial hook or old shell bans installed will retain restrictions.
+See docs/goose.md in the ZIP for exact migration steps. No Fastrock update needed.
 
 The Windows x64 ZIP is built, signed, timestamped and verified by GitHub Actions.

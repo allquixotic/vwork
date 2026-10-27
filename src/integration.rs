@@ -8,15 +8,14 @@ pub fn goose(home: &Path, workspace: &str, output: &Path) -> Result<()> {
     let exe = std::env::current_exe()?;
     std::fs::create_dir_all(output)?;
     let config = json!({"extensions":{
-        "developer":{"type":"builtin","name":"developer","enabled":false},
-        "extensionmanager":{"type":"platform","name":"extensionmanager","enabled":false},
+        "developer":{"type":"builtin","name":"developer","enabled":true},
         "vwork":{"type":"stdio","name":"vwork","enabled":true,"cmd":exe,"args":["--home",home,"mcp","--workspace",workspace],"timeout":900}
     }});
     std::fs::write(
         output.join("config.fragment.yaml"),
         serde_yaml::to_string(&config)?,
     )?;
-    let recipe = json!({"version":"1.0.0","title":format!("vwork: {workspace}"),"description":"Coding with compressed virtual source","instructions":crate::protocol::INSTRUCTIONS,"extensions":[{"type":"stdio","name":"vwork","cmd":exe,"args":["--home",home,"mcp","--workspace",workspace],"timeout":900}]});
+    let recipe = json!({"version":"1.0.0","title":format!("vwork: {workspace}"),"description":"Coding with compressed virtual source","instructions":crate::protocol::INSTRUCTIONS,"extensions":[{"type":"builtin","name":"developer"},{"type":"stdio","name":"vwork","cmd":exe,"args":["--home",home,"mcp","--workspace",workspace],"timeout":900}]});
     std::fs::write(output.join("recipe.yaml"), serde_yaml::to_string(&recipe)?)?;
     std::fs::write(
         output.join("AGENTS.md"),
@@ -28,14 +27,14 @@ pub fn goose(home: &Path, workspace: &str, output: &Path) -> Result<()> {
         .to_string_lossy()
         .replace('\\', "/")
         .replace('\'', "'\"'\"'");
-    let hook = json!({"hooks":{"PreToolUse":[{"matcher":crate::protocol::hook_matcher(),"hooks":[{"type":"command","command":format!("'{executable}' hook"),"on_failure":"block"}]}]}});
+    let hook = json!({"hooks":{"PreToolUse":[{"matcher":crate::protocol::hook_matcher(),"hooks":[{"type":"command","command":format!("'{executable}' hook"),"on_failure":"allow"}]}]}});
     let hooks = output.join("plugin/hooks");
     std::fs::create_dir_all(&hooks)?;
     std::fs::write(hooks.join("hooks.json"), serde_json::to_vec_pretty(&hook)?)?;
     std::fs::write(
         output.join("plugin/plugin.json"),
         serde_json::to_vec_pretty(
-            &json!({"name":"vwork-policy","version":env!("CARGO_PKG_VERSION"),"description":"Route source operations to virtual workspace tools"}),
+            &json!({"name":"vwork-policy","version":env!("CARGO_PKG_VERSION"),"description":"Detect direct unmanaged Git repository creation"}),
         )?,
     )?;
     Ok(())

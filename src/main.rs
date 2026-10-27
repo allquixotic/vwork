@@ -48,7 +48,7 @@ enum Commands {
     },
     /// Verify Git, configuration and daemon connectivity.
     Doctor,
-    /// Compact the database; daemon must be stopped.
+    /// Compact the database through its daemon, or offline when stopped.
     Compact,
     /// Create a source ZIP, optionally including a Windows PE executable.
     Package {

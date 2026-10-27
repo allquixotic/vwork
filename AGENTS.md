@@ -6,7 +6,7 @@ The consumer prompt is `examples/AGENTS.md`.
 - Preserve the storage and isolation invariants in SPEC.md.
 - All shipped programs are native Rust. Use git2/libgit2 for Git; store all persistent Git objects, refs and source in redb.
 - Default zstd level is 3. Never silently copy complete source into each workspace.
-- Keep source changes, searches and diffs virtual. Physical exports must be explicit; tool copies must be tracked, bounded and reclaimable.
+- Default repository changes to virtual tools. Host reads, file edits, scripts and other MCPs remain available. Tool copies use bounded leases; intentional workspace_export copies remain indefinite. Keep consumer instructions simple and shared across all generated surfaces.
 - Never point managed materialization at a registered source checkout.
 - Keep build execution serialized per repository and revision-pinned.
 - MCP may clone/register repositories through structured tools, as explicitly

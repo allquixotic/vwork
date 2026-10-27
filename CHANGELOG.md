@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- Goose setup enables Developer and preserves other MCP extensions for host reads, edits, API queries and one-off scripts.
+- One shared instruction source for MCP, recipes and global hints; virtual repository work by default, leased copies for transient tools, indefinite durable exports.
+- Optional hook redirects recognizable direct Git clone/init/worktree-add commands; reads and general tools remain available, including on hook failure.
+- Upgrade instructions replace old strict hints/hooks instead of appending conflicting rules.
+
 ## 0.3.0
 
 - Store Git objects, refs and all committed source in redb using git2/libgit2; share identical objects daemon-wide and migrate old registrations without modifying original repositories.

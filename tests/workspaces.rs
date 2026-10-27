@@ -511,22 +511,13 @@ fn protocol_and_hooks() -> Result<()> {
         "developer__text_editor",
         "write",
         "filesystem__read_file",
+        "vwork_files_read",
     ] {
         assert_eq!(
             protocol::hook(&json!({"tool_name":name}))["decision"],
-            "block"
+            "allow"
         );
     }
-    assert_eq!(
-        protocol::hook(&json!({"tool_name":"vwork_files_read"}))["decision"],
-        "allow"
-    );
-    assert!(
-        protocol::hook(&json!({"tool_name":"shell"}))["reason"]
-            .as_str()
-            .unwrap()
-            .contains("vwork_package_list/run")
-    );
     let tools = protocol::tools(true);
     for name in ["shell", "vwork_database_compact"] {
         assert!(!tools.iter().any(|v| v["name"] == name));

@@ -7,7 +7,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - One authenticated loopback daemon owns one redb database. Multiple repositories, workspaces, and MCP clients.
 - Zstd level 3 default; configurable. All persistent Git objects, refs, base contents and changed blobs inside redb; globally deduplicated objects.
 - Serialized builds use bounded, expiring temporary copies. Explicit import/release; never mutate original checkout.
-- No transparent virtual filesystem claim. No arbitrary shell in MCP.
+- No transparent virtual filesystem claim. vwork MCP stays structured; Goose host tools and other MCPs remain available.
 
 # §I
 - I.cli: `vwork init|serve|start|stop|call|mcp|hook|goose|package|doctor|compact`.
@@ -24,7 +24,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V5: Searches, diffs, status, history and merge observe overlay additions, edits and tombstones. Test `virtual_operations`.
 - V6: Exported Git commits match virtual content and preserve user's index, worktree and branch. Test `git_commit_isolation`.
 - V7: Builds serialize per repository, pin revision, respect timeout/output limits, and preserve active virtual edits. Tests `managed_builds`, `managed_build_serialization`.
-- V8: Daemon authenticates clients; MCP speaks valid JSON-RPC and hides raw shell; hook blocks native bypass. Tests `protocol_and_hooks`, `generated_goose_configuration`.
+- V8: Daemon authenticates clients; MCP speaks valid JSON-RPC and hides raw shell; hook redirects recognizable unmanaged Git creation; host reads/writes/scripts remain available. Tests `protocol_and_hooks`, `generated_goose_configuration`.
 - V9: GC retains live/forked/exported revisions and blobs; database reopens. Tests `garbage_collection`, `squash_reclaims_old_blobs`, `export_retention`.
 - V10: ZIP contains only Windows x64 binary plus allowlisted source/docs; no local state/secrets. Test `package_contents`.
 
@@ -34,7 +34,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V14: Build source-change reports compare content against the virtual index; a rebuilt stat cache alone never marks files changed. Tests `build_git_metadata`, `package_workflows`.
 - V15: Package-tool path arguments and environment values use standard absolute paths; Windows NT verbatim prefixes stay internal. Tests `package_process_paths`, `package_input_changes`.
 - V16: Enabled MCP startup ! reuse or start one daemon per home with bounded probes/waits; MCP stdout ! JSON-RPC only; bridge exit ! keep shared owner alive; explicit opt-out ! no start; startup failure ! no owner takeover. Tests `v16_mcp_cold_start_and_reuse`, `v16_concurrent_starters`, `v16_startup_bounds`, `v16_mcp_opt_out`.
-- V17: Generated Goose hook matcher ! cover every blocked tool family; vwork calls ! skip hook process; selected hook ! retain on_failure=block. Tests `v17_generated_hook_matcher`, `protocol_and_hooks`.
+- V17: Generated Goose hook matcher ! select known shell tools only; vwork/read/edit/other-MCP calls ! skip hook process; on_failure=allow ! preserve reads if hook fails. Tests `v17_generated_hook_matcher`, `protocol_and_hooks`.
 - V18: Captured Git/task/package subprocesses on Windows ! no console allocation; preserve redirected IO and exit status. Tests `v18_windows_task_console`, `v18_process_stdio`.
 - V19: Read-only MCP storage info ! report shared manifests/blobs and per-workspace/revision records without probe mutations; same registered repo+commit ! reuse base manifest; identical edits ! reuse daemon blobs. Test `v19_storage_sharing`.
 - V20: MCP repository setup ! structured clone/register only; clones ! redb-owned objects/refs; bounded temporary transport staging; no persistent checkout; no overwrite; registration publication ! unique ID transaction; failures ! no registered partial clone. Tests `v20_repository_setup`, `v20_clone_failure_preserves_paths`, `v20_registration_is_atomic`.
@@ -45,6 +45,8 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V24: Compaction ! daemon-exclusive, retain connection identity, reject/defer active jobs; hourly automatic check ! OS input idle >300s, unknown idle ! skip; GC then compact only if estimated reclaimable bytes >1,000,000,000 by default; return measured before/after and skip/error reasons. Tests `v24_online_compaction`, `v24_compact_reclaims_holes_and_preserves_live_data`, `v24_schedule_idle_and_busy`.
 - V25: Existing empty/damaged DB ! never replaced by a fresh database; redb crash repair ! preserve pre-repair copy, integrity-check before serving, report recovered state; unrecoverable corruption ! fail closed with original retained. Tests `v25_existing_empty_database`, `v25_crash_recovery_and_corruption_preservation`.
 - V26: Fetch ! git2 transport with redb-backed existing objects, temporary new packs only, atomic ref publication, same repo ID; preserve pinned workspaces/private commits; failure ! refs unchanged; explicit prune only. Tests `v26_fetch_updates_refs`, `v26_fetch_failure_prune_and_private_commits`, `v26_legacy_clone_requires_explicit_source_once`.
+
+- V27: Flexible Goose defaults ! Developer enabled, unrelated extensions preserved, all pure reads and general scripts available; hook ! detect direct clone/init/worktree-add, preserve quoted examples/help/read commands; one shared prompt ! retain indefinite workspace_export and recommend leased transient copies. Tests `v27_reads_and_general_tools_remain_available`, `v27_direct_repository_creation_is_redirected`, `v27_generated_configuration_and_single_prompt`.
 
 # §T
 id|status|task|cites
@@ -66,6 +68,8 @@ T12|x|Recoverable leased temporary copies and uv/CDK package actions|V4,V7,V9,V1
 T13|x|Online/manual and hourly idle-aware compaction; crash/corruption recovery|V7,V9,V16,V24,V25,I.cli,I.rpc,I.storage
 T14|x|Incremental fetch into existing redb registrations; distinct MCP tool descriptions|V20,V21,V26,I.rpc,I.goose
 T15|x|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws upload|V10,V24,V25,V26,I.release
+
+T16|x|Flexible Goose host tools, narrow misuse hook, shared instructions and indefinite exports|V8,V17,V27,I.goose,I.rpc
 
 # §B
 id|date|cause|fix
@@ -100,3 +104,5 @@ B24|2026-10-26|system-idle-time build.rs selects framework linking by host OS, b
 B25|2026-10-26|Windows mandatory byte-range locks prevent fs::copy after redb opens the file|V25; snapshot through an exclusively locked source handle before redb open, serialize startup/recovery handoff; native reopen/crash regression
 
 B26|2026-10-26|Legacy clones have empty provenance paths; attempting Git discovery there could select the process working directory|V26; skip empty legacy paths, require an explicit source once and persist it; v26_legacy_clone_requires_explicit_source_once
+
+B27|2026-10-26|Strict generated config and blanket hook prevented host reads/scripts and contradicted broad MCP access; three V27 baseline tests fail on Windows|V27; enable Developer, preserve other MCPs, target direct Git creation and share one prompt
