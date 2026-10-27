@@ -106,3 +106,5 @@ B25|2026-10-26|Windows mandatory byte-range locks prevent fs::copy after redb op
 B26|2026-10-26|Legacy clones have empty provenance paths; attempting Git discovery there could select the process working directory|V26; skip empty legacy paths, require an explicit source once and persist it; v26_legacy_clone_requires_explicit_source_once
 
 B27|2026-10-26|Strict generated config and blanket hook prevented host reads/scripts and contradicted broad MCP access; three V27 baseline tests fail on Windows|V27; enable Developer, preserve other MCPs, target direct Git creation and share one prompt
+
+B28|2026-10-26|Wrapper detector scanned argument data after the executed shell command and blocked a harmless echo; V27 regression reproduced on Windows|V27; inspect only the first executed command string, allow script/unknown/syntax-check forms; cancel initial release before publication

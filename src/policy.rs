@@ -56,12 +56,22 @@ fn creates_from_words(words: &[String], depth: usize) -> bool {
     let program = program.strip_suffix(".exe").unwrap_or(&program);
     let args = &words[1..];
     if matches!(program, "sh" | "bash" | "zsh" | "pwsh" | "powershell") {
-        return args.windows(2).any(|pair| {
-            matches!(
-                pair[0].to_ascii_lowercase().as_str(),
-                "-c" | "-lc" | "-command"
-            ) && creates_repository(&pair[1], depth + 1)
-        });
+        for (i, arg) in args.iter().enumerate() {
+            match arg.to_ascii_lowercase().as_str() {
+                "-c" | "-lc" | "-command" => {
+                    // Everything after the command string is argument data.
+                    return args
+                        .get(i + 1)
+                        .is_some_and(|command| creates_repository(command, depth + 1));
+                }
+                "-noprofile" | "-noninteractive" | "-nologo" | "--noprofile" | "--norc" | "-l"
+                | "-e" | "-u" => {}
+                // A script path, option with a value, syntax-check flag or
+                // unfamiliar shell grammar must not be mistaken for execution.
+                _ => return false,
+            }
+        }
+        return false;
     }
     if program == "cmd" {
         return args
