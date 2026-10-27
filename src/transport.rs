@@ -1,5 +1,5 @@
 use crate::{
-    engine::Engine,
+    maintenance::{Schedule, Service, idle_time},
     model::{Config, Connection, id},
     protocol,
 };
@@ -96,7 +96,9 @@ pub fn serve(home: &Path) -> Result<()> {
         token: format!("{}{}", id(), id()),
         pid: std::process::id(),
     };
-    let engine = Arc::new(Engine::open(home, config)?);
+    let max_body = config.max_file_bytes.saturating_mul(2).max(1024 * 1024);
+    let compact_interval = config.compact_interval_seconds;
+    let engine = Arc::new(Service::open(home, config)?);
     let conn_path = home.join("connection.json");
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -115,12 +117,19 @@ pub fn serve(home: &Path) -> Result<()> {
     let reaper_stop = stop.clone();
     let reaper = std::thread::spawn(move || {
         let mut next = std::time::Instant::now();
+        let mut maintenance = Schedule::new(next, compact_interval);
         while !reaper_stop.load(Ordering::SeqCst) {
             if std::time::Instant::now() >= next {
                 if let Err(error) = reaper_engine.reap_temporary() {
                     eprintln!("temporary cleanup: {error:#}");
                 }
                 next = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            }
+            if maintenance.due(std::time::Instant::now()) {
+                match reaper_engine.automatic_check(idle_time()) {
+                    Ok(result) => eprintln!("Automatic database maintenance: {result}"),
+                    Err(error) => eprintln!("Automatic database maintenance failed: {error:#}"),
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
@@ -150,11 +159,7 @@ pub fn serve(home: &Path) -> Result<()> {
             let _ = request.respond(tiny_http::Response::from_string("busy").with_status_code(503));
             continue;
         }
-        let max = engine
-            .config
-            .max_file_bytes
-            .saturating_mul(2)
-            .max(1024 * 1024);
+        let max = max_body;
         let mut body = Vec::new();
         request
             .as_reader()

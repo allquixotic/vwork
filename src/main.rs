@@ -163,10 +163,20 @@ fn run() -> Result<()> {
                 .read(true)
                 .write(true)
                 .open(home.join("daemon.lock"))?;
-            f.try_lock_exclusive()
-                .context("stop daemon before compacting")?;
-            let mut db = redb::Database::open(home.join("workspaces.redb"))?;
-            println!("compacted={}", db.compact()?);
+            if f.try_lock_exclusive().is_ok() {
+                anyhow::ensure!(
+                    home.join("workspaces.redb").exists(),
+                    "no database to compact"
+                );
+                let service =
+                    vwork::maintenance::Service::open(&home, transport::load_config(&home)?)?;
+                println!("{}", service.compact()?);
+            } else {
+                println!(
+                    "{}",
+                    transport::connect(&home, "database_compact", &json!({}))?
+                );
+            }
         }
         Commands::Package {
             root,

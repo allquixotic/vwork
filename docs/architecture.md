@@ -44,7 +44,7 @@ reusable pages. Temporary copies and deliberate durable exports are outside redb
 Only `vwork serve` opens the redb database. A file lock rejects a second owner.
 `start` and the default MCP entrypoint share a per-home startup lock, bounded
 authenticated health probes and daemon launch. A separate daemon lock protects
-existing owners and offline compaction. Startup never kills a nonresponsive owner,
+existing owners and exclusive maintenance. Startup never kills a nonresponsive owner,
 and MCP disconnect does not stop the shared daemon. Windows uses an explicit
 process handle allowlist (NUL stdin and daemon log only) so background children
 cannot retain a bridge's MCP pipes. Unix starts a separate session with redirected
@@ -167,7 +167,8 @@ needs no content reads; it is not an NTFS allocation scanner.
 - Virtual revisions are not Git commits. Commit export makes one commit whose
   parent is the workspace's original base. Repeated exports remain independent
   snapshots against that base. See the apply workflow before cherry-picking.
-- No refresh/fetch/push, rebase, blame, interactive staging,
+- Incremental fetch refreshes refs inside the same registration; workspace snapshots remain pinned.
+- No push, rebase, blame, interactive staging,
   filesystem mounting or general file-manager GUI is included.
 - The MCP binding is a default workspace, not tenant isolation. The hook is a
   convenience policy. Build processes have your normal user permissions.
@@ -176,3 +177,29 @@ Sources:
 [redb design](https://github.com/cberner/redb/blob/master/docs/design.md),
 [redb API](https://docs.rs/redb/latest/redb/),
 [zstd compression API](https://docs.rs/zstd/latest/zstd/stream/fn.encode_all.html).
+
+## Idle maintenance and startup recovery
+
+A daemon-wide read/write gate surrounds all requests and temporary-copy cleanup.
+Compaction takes the exclusive side without waiting for active requests, runs GC,
+preflights free pages, and moves live pages only above the configured threshold.
+This also excludes long-running builds/fetches. Connection identity stays stable.
+A failed compaction/integrity check puts the service into a failed state; restart
+must validate recovery before normal requests can resume. `maintenance_status`
+remains readable. The monotonic hourly timer checks OS input idle >300 seconds;
+unknown idle state skips. Manual compaction uses the same size threshold.
+
+Startup takes a recovery lock, snapshots the database through an exclusively
+locked file handle, then uses redb's repair and full integrity checking before
+accepting clients. Windows requires that snapshot happen before redb's own
+byte-range lock is acquired. One backup and one partial file bound recovery
+storage; clean validation removes the snapshot. Corruption never triggers creation
+of a replacement empty DB. See operations.md for backup/restore limits.
+
+The small [system-idle-time wrapper](https://docs.rs/system-idle-time/1.0.4/system_idle_time/)
+provides macOS IOKit idle time. Its host-selected build script prevents using it
+for Mac-to-Windows cross compilation, so Windows calls
+[GetLastInputInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo)
+directly with wrapping tick arithmetic. The
+[redb Database API](https://docs.rs/redb/4.4.0/redb/struct.Database.html)
+provides transactional compaction and crash/integrity recovery.

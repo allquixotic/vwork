@@ -110,6 +110,7 @@ struct Backend {
     db: Arc<Database>,
     repo: String,
     level: i32,
+    enumerate: bool,
 }
 
 // libgit2 C enums are signed on Windows and unsigned on Unix.
@@ -236,13 +237,43 @@ extern "C" fn free_cb(backend: *mut raw::git_odb_backend) {
         drop(Box::from_raw(backend as *mut Backend));
     }
 }
+extern "C" fn foreach_cb(
+    backend: *mut raw::git_odb_backend,
+    cb: raw::git_odb_foreach_cb,
+    payload: *mut c_void,
+) -> i32 {
+    callback(|| {
+        let b = unsafe { &*(backend as *const Backend) };
+        if b.enumerate {
+            for oid in members(&b.db, &b.repo)? {
+                let code = cb.context("missing Git enumeration callback")?(oid.raw(), payload);
+                if code != 0 {
+                    return Ok(code);
+                }
+            }
+        }
+        Ok(0)
+    })
+}
 pub fn odb(db: Arc<Database>, repo: &str, level: i32) -> Result<Odb<'static>> {
     let odb = Odb::new()?;
+    attach(&odb, db, repo, level, false)?;
+    Ok(odb)
+}
+
+/// Read-through backend for a temporary fetch receiver. Existing redb objects
+/// satisfy negotiation and thin-pack bases; enumeration/import visits new disk
+/// packs only. libgit2 writes received packs to its normal filesystem backend.
+pub fn attach_readonly(odb: &Odb<'_>, db: Arc<Database>, repo: &str) -> Result<()> {
+    attach(odb, db, repo, 3, true)
+}
+fn attach(odb: &Odb<'_>, db: Arc<Database>, repo: &str, level: i32, readonly: bool) -> Result<()> {
     let mut b = Box::new(Backend {
         raw: unsafe { std::mem::zeroed() },
         db,
         repo: repo.into(),
         level,
+        enumerate: !readonly,
     });
     ensure!(
         unsafe { raw::git_odb_init_backend(&mut b.raw, raw::GIT_ODB_BACKEND_VERSION) } == 0,
@@ -251,15 +282,16 @@ pub fn odb(db: Arc<Database>, repo: &str, level: i32) -> Result<Odb<'static>> {
     b.raw.read = Some(read_cb);
     b.raw.read_header = Some(header_cb);
     b.raw.exists = Some(exists_cb);
-    b.raw.write = Some(write_cb);
+    b.raw.write = if readonly { None } else { Some(write_cb) };
+    b.raw.foreach = Some(foreach_cb);
     b.raw.free = Some(free_cb);
     let ptr = Box::into_raw(b);
-    let code = unsafe { raw::git_odb_add_backend(odb.raw(), &mut (*ptr).raw, 1) };
+    let code = unsafe { raw::git_odb_add_backend(odb.raw(), &mut (*ptr).raw, 100) };
     if code < 0 {
         unsafe {
             drop(Box::from_raw(ptr));
         }
         anyhow::bail!("attach redb Git backend");
     }
-    Ok(odb)
+    Ok(())
 }

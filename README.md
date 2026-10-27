@@ -124,7 +124,8 @@ partially changing the workspace.
 - Configured npm, Cargo, pip, uv and CDK projects with install/build/test actions, reusable
   caches, dependency-input checks and explicit lockfile/source writeback.
 - Logical directory-size reports, read-only MCP shared-storage counters, global storage stats, GC, history squash and
-  offline redb compaction.
+  online redb compaction, automatically checked hourly when the user is idle.
+- Incremental `repo_fetch` refreshes saved origins inside redb without moving existing workspaces.
 - Generated Goose recipe/config fragment, consumer `AGENTS.md` and native
   `PreToolUse` hook. Server instructions work with other stdio MCP clients too.
 
@@ -152,6 +153,10 @@ temporary_ttl_seconds = 1800    # 30 minutes, renewed after each build
 temporary_max_ttl_seconds = 86400
 max_temporary_copies = 4
 max_recovery_bytes = 134217728  # source edits preserved before cleanup
+auto_compact = true
+compact_interval_seconds = 3600
+compact_idle_seconds = 300
+compact_min_reclaim_bytes = 1000000000
 ```
 
 Compression levels -7 through 22 are accepted. Changes affect new blob writes;

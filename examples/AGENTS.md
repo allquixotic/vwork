@@ -3,6 +3,7 @@
 Source lives in vwork, not the original checkout or the current shell directory.
 
 - Reuse `vwork_repo_list` registrations. For requested setup, use `vwork_repo_clone` or `vwork_repo_register`; objects, refs and committed contents are imported into redb. No persistent source checkout is needed.
+- Use `vwork_repo_fetch` to refresh an existing registration, rather than registering duplicate copies. Omit `source` to reuse the saved origin; older imports may need it once. Existing workspaces stay pinned. Create a new workspace from the fetched branch when you need newer source. `prune` removes vanished upstream refs only, never private commits or workspace snapshots.
 - Use `vwork_workspace_info` to get the current revision before editing.
 - Read with `vwork_files_read`; discover paths with `vwork_files_list` / `vwork_files_glob`.
 - Search with `vwork_files_search`. Use regex, glob filters, context and pagination.

@@ -1,35 +1,24 @@
-vwork 0.3.0 stores all persistent Git objects, refs and source contents in redb.
-Git objects deduplicate across repository registrations by object ID. git2/libgit2
-handles normal reads, history, trees and commits in process. Models can clone a
-selected source or register an existing repository through structured MCP tools;
-no persistent source checkout or borrowed external object store remains.
+vwork 0.3.1 adds incremental Git fetch, idle-time compaction and startup recovery checks.
 
-Filesystem-only tools use tracked temporary copies. Tasks/packages return a lease,
-expiry, exact revision, result and source changes. Explicit release removes the
-copy and its environments/outputs; expiry and startup cleanup provide a fallback.
-Unimported source edits are saved into separate recovery workspaces, within limits.
-Defaults: four copies, 30-minute TTL, renewals up to 24 hours, 128 MiB source recovery.
-Active vwork jobs prevent deletion; failed cleanup stays visible and is retried.
-Legacy owned build directories are adopted and reclaimed with source recovery.
+- `repo_fetch` refreshes the same registration from its saved origin using libgit2.
+  Existing objects stay in redb; only new transfer packs temporarily use disk.
+  Refs publish atomically. Existing workspaces and private commits stay pinned;
+  create a new workspace from a fetched ref to use updated source. Older imports
+  may require `source` once. Optional pruning removes vanished upstream refs.
+- Automatic compaction evaluates hourly, only after more than five minutes of
+  Windows/macOS input inactivity and when no vwork operation is active. GC and
+  allocated-page statistics preflight the work; compaction requires more than
+  1 GB estimated free space. `vwork compact` and Fastrock 0.3.1 provide manual
+  access with the same threshold, without stopping the daemon.
+- Startup refuses empty/damaged replacements, snapshots before redb recovery,
+  verifies integrity before serving, and retains evidence after repairs. Full
+  validation temporarily needs one database-sized copy and may slow startup.
+  Unrecoverable corruption requires restoring an independent verified backup.
+- Copy/rename and status/diff MCP descriptions now distinguish their behavior.
 
-Configured package managers now include uv and CDK. uv supports sync/lock/check/
-test/build; CDK supports local synth/list with lookups disabled. Tools operate on
-leased files and return completion before the model decides when to release them.
-Captured Windows subprocesses suppress console allocation. Read-only storage_info
-provides sharing evidence without disposable probe workspaces.
+Upgrade: stop vwork, back up its state, replace the executable, and restart.
+Existing schema-2 registrations/workspaces remain compatible. Reconnect Goose and
+regenerate/merge agent instructions for the new fetch tool. Upgrades from 0.2.x
+still need original registered Git stores for the one-time schema-2 import.
 
-Upgrade: stop the daemon and back up its state. Keep original registered Git stores
-available for the first startup migration to schema 2. Original user checkouts are
-preserved. Large first-run migrations can outlast a client startup wait; let the
-owner finish (progress is in daemon.log), then reconnect. Older binaries cannot reopen schema 2; rollback requires the backup.
-Replace vwork.exe, reconnect Goose, and regenerate/merge agent instructions and
-hook matchers while preserving local customizations. Developer may remain disabled;
-no Fastrock/Goose rebuild is needed. An old unfiltered Goose shell hook can still
-flash independently; regenerate its matcher to skip vwork calls.
-
-The ZIP is built/signed/verified by CI with checksums and GitHub provenance.
-Remote clone uses journaled temporary libgit2 transfer packs, cleaned after import
-and restart. Native tools still require ordinary files; vwork does not mount redb.
-Global package caches, explicitly configured external output paths and deliberate
-user exports are not lease-owned. Cleanup runs while the daemon runs or at restart;
-locked files and recovery limits produce actionable errors instead of data loss.
+The Windows x64 ZIP is built, signed, timestamped and verified by GitHub Actions.

@@ -19,6 +19,10 @@ pub struct Config {
     pub temporary_max_ttl_seconds: u64,
     pub max_temporary_copies: usize,
     pub max_recovery_bytes: u64,
+    pub auto_compact: bool,
+    pub compact_interval_seconds: u64,
+    pub compact_idle_seconds: u64,
+    pub compact_min_reclaim_bytes: u64,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -35,6 +39,10 @@ impl Default for Config {
             temporary_max_ttl_seconds: 86400,
             max_temporary_copies: 4,
             max_recovery_bytes: 128 * 1024 * 1024,
+            auto_compact: true,
+            compact_interval_seconds: 3600,
+            compact_idle_seconds: 300,
+            compact_min_reclaim_bytes: 1_000_000_000,
         }
     }
 }
@@ -56,6 +64,10 @@ impl Config {
                 && self.max_recovery_bytes > 0,
             "limits must be positive"
         );
+        anyhow::ensure!(
+            self.compact_interval_seconds > 0 && self.compact_interval_seconds <= 31_536_000,
+            "compaction interval must be 1..31536000 seconds"
+        );
         Ok(())
     }
 }
@@ -73,6 +85,8 @@ pub struct Repository {
     pub author_name: String,
     #[serde(default)]
     pub author_email: String,
+    #[serde(default)]
+    pub fetch_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

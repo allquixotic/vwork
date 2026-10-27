@@ -100,6 +100,35 @@ fn v16_mcp_opt_out() -> Result<()> {
 }
 
 #[test]
+fn v24_online_compaction() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path();
+    let _cleanup = StopHome(home.to_owned());
+    assert!(mcp_exchange(home, &[])?.status.success());
+    let identity = std::fs::read(home.join("connection.json"))?;
+    let result = vwork::transport::connect(home, "database_compact", &json!({}))?;
+    let cli = Command::new(executable())
+        .arg("--home")
+        .arg(home)
+        .arg("compact")
+        .output()?;
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli.stdout)?["reason"],
+        "below_threshold"
+    );
+    assert_eq!(result["compacted"], false);
+    assert_eq!(result["reason"], "below_threshold");
+    assert_eq!(std::fs::read(home.join("connection.json"))?, identity);
+    assert!(vwork::startup::health(home, Duration::from_secs(2)).is_ok());
+    Ok(())
+}
+
+#[test]
 fn v16_startup_bounds() -> Result<()> {
     use fs2::FileExt;
     use std::time::Instant;

@@ -26,10 +26,11 @@ pub struct Engine {
     pub db: Arc<Database>,
     pub home: PathBuf,
     pub config: Config,
+    pub recovery: Value,
     build_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) lifecycle: RwLock<()>,
     pub(crate) temporary_lock: Mutex<()>,
-    transfer_lock: Mutex<()>,
+    pub(crate) transfer_lock: Mutex<()>,
     base_cache: Mutex<HashMap<String, Tree>>,
 }
 
@@ -59,7 +60,7 @@ impl Engine {
         config.validate()?;
         std::fs::create_dir_all(home.as_ref())?;
         let home = home.as_ref().canonicalize()?;
-        let db = Database::create(home.join("workspaces.redb"))?;
+        let (db, recovery) = crate::storage::open(&home.join("workspaces.redb"))?;
         let txn = db.begin_write()?;
         {
             let mut table = txn.open_table(RECORDS)?;
@@ -79,6 +80,7 @@ impl Engine {
             db: Arc::new(db),
             home,
             config,
+            recovery,
             build_locks: Mutex::new(HashMap::new()),
             lifecycle: RwLock::new(()),
             temporary_lock: Mutex::new(()),
@@ -442,6 +444,12 @@ impl Engine {
             refs: BTreeMap::new(),
             author_name: String::new(),
             author_email: String::new(),
+            fetch_source: source
+                .find_remote("origin")
+                .ok()
+                .and_then(|r| r.url().ok().map(String::from))
+                .filter(|url| git::clone_source(url).is_ok())
+                .or_else(|| Some(git::path_argument(path).to_string_lossy().into_owned())),
         };
         git::import(
             &self.db,
@@ -466,7 +474,7 @@ impl Engine {
         }
         Ok(())
     }
-    fn remove_transfer(&self, transfer: &str) -> Result<()> {
+    pub(crate) fn remove_transfer(&self, transfer: &str) -> Result<()> {
         valid_id(transfer)?;
         let path = self.home.join("transfers").join(transfer);
         safe_ancestors(&path)?;
@@ -497,6 +505,7 @@ impl Engine {
             let mut repo = self.inspect_repository(repo_id, Path::new(&source))?;
             repo.path = PathBuf::new();
             repo.git_dir = PathBuf::new();
+            repo.fetch_source = Some(source.clone());
             self.publish_repository(&repo)?;
             return Ok(
                 json!({"repo":repo.id,"stored":true,"storage":"redb","default_reference":"HEAD"}),
@@ -553,6 +562,7 @@ impl Engine {
             });
             let mut fetch = git2::FetchOptions::new();
             fetch.remote_callbacks(callbacks);
+            let fetch_source = source.clone();
             let source = git2::build::RepoBuilder::new()
                 .bare(true)
                 .fetch_options(fetch)
@@ -565,6 +575,7 @@ impl Engine {
                 refs: BTreeMap::new(),
                 author_name: String::new(),
                 author_email: String::new(),
+                fetch_source: Some(fetch_source),
             };
             git::import(
                 &self.db,
@@ -599,9 +610,10 @@ impl Engine {
             return self.temporary_call(op, a);
         }
         match op {
+            "repo_fetch" => return self.fetch_repository(a),
             "health" => {
                 return Ok(
-                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":SCHEMA_VERSION,"compression_level":self.config.compression_level}),
+                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":SCHEMA_VERSION,"compression_level":self.config.compression_level,"recovery":self.recovery}),
                 );
             }
             "repo_register" | "repo_clone" => {

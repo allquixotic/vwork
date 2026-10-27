@@ -42,6 +42,9 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V21: Register/clone import all Git objects/refs into redb via git2; reads/history/commits work after source removal; legacy registration migrates before use without modifying source; shared payloads retain per-repository membership. Tests `v21_redb_owns_git`, `v21_legacy_migration`, `v21_clone_transport`, `v21_import_batches`, `v21_shared_objects_keep_repository_membership`.
 - V22: Temporary copies ! journaled ownership, bounded count/TTL, explicit release/renew, startup and periodic expiry cleanup; active jobs protected; failed cleanup retained for retry; preserve bounded nonignored source edits as recovery snapshot before automatic removal. Tests `v22_temporary_lifecycle`, `v22_temporary_recovery`, `v22_cleanup_ownership`, `v22_temporary_bounds_and_active_job`, `v22_legacy_build_cleanup`, `v22_recovery_limit_preserves_copy`, `v22_periodic_cleanup`.
 - V23: uv/CDK ! structured configured package actions over temporary copies; report completion, revision, lease and changes; no implicit virtual writeback or CDK deployment. Tests `v23_uv_cdk_plans`, `v23_uv_cdk_execution`.
+- V24: Compaction ! daemon-exclusive, retain connection identity, reject/defer active jobs; hourly automatic check ! OS input idle >300s, unknown idle ! skip; GC then compact only if estimated reclaimable bytes >1,000,000,000 by default; return measured before/after and skip/error reasons. Tests `v24_online_compaction`, `v24_compact_reclaims_holes_and_preserves_live_data`, `v24_schedule_idle_and_busy`.
+- V25: Existing empty/damaged DB ! never replaced by a fresh database; redb crash repair ! preserve pre-repair copy, integrity-check before serving, report recovered state; unrecoverable corruption ! fail closed with original retained. Tests `v25_existing_empty_database`, `v25_crash_recovery_and_corruption_preservation`.
+- V26: Fetch ! git2 transport with redb-backed existing objects, temporary new packs only, atomic ref publication, same repo ID; preserve pinned workspaces/private commits; failure ! refs unchanged; explicit prune only. Tests `v26_fetch_updates_refs`, `v26_fetch_failure_prune_and_private_commits`, `v26_legacy_clone_requires_explicit_source_once`.
 
 # §T
 id|status|task|cites
@@ -60,6 +63,9 @@ T10|x|Model-visible clone/register with shared Git objects in redb; preserve oth
 
 T11|x|redb Git object backend, migration, library Git operations|V1,V3,V6,V11,V19,V20,V21,I.storage
 T12|x|Recoverable leased temporary copies and uv/CDK package actions|V4,V7,V9,V12,V13,V22,V23,I.rpc,I.goose
+T13|~|Online/manual and hourly idle-aware compaction; crash/corruption recovery|V7,V9,V16,V24,V25,I.cli,I.rpc,I.storage
+T14|~|Incremental fetch into existing redb registrations; distinct MCP tool descriptions|V20,V21,V26,I.rpc,I.goose
+T15|~|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws upload|V10,V24,V25,V26,I.release
 
 # §B
 id|date|cause|fix
@@ -86,3 +92,11 @@ B18|2026-10-26|Legacy build directories could survive a redb migration and retai
 B19|2026-10-26|libgit2 C error enum is unsigned on Unix but signed on Windows, making its required cross-platform ABI cast trigger Windows-only strict lint|Narrow documented unnecessary_cast allowance at the FFI boundary; retain strict checks on both targets
 B20|2026-10-26|Daemon health moved to schema 2 while startup probes still accepted only schema 1, making healthy owners appear unavailable|V16,V21; share SCHEMA_VERSION between health and startup, rerun real cold-start/concurrent-start/periodic-cleanup tests
 B21|2026-10-26|A global ODB existence hit could skip adding repository membership on reused writes, and allow unrelated commit IDs to resolve|V21; scope backend read/header/existence to repository membership while deduplicating payload globally; shared-object/native-export regression
+B22|2026-10-26|Database::create silently initialized an existing zero-byte state file, concealing truncation/data loss|V25; existing files use open-only validation, pre-repair snapshots and integrity checks; empty/damaged files fail closed
+B23|2026-10-26|New fetch code assumed older git2 URL return type, callable nonoptional FFI callback and an in-scope redb trait|Mechanical API corrections; retain V21/V26 native fetch and callback coverage
+
+B24|2026-10-26|system-idle-time build.rs selects framework linking by host OS, breaking Mac-to-Windows compilation|V24; use GetLastInputInfo directly on Windows and restrict wrapper dependency to macOS
+
+B25|2026-10-26|Windows mandatory byte-range locks prevent fs::copy after redb opens the file|V25; snapshot through an exclusively locked source handle before redb open, serialize startup/recovery handoff; native reopen/crash regression
+
+B26|2026-10-26|Legacy clones have empty provenance paths; attempting Git discovery there could select the process working directory|V26; skip empty legacy paths, require an explicit source once and persist it; v26_legacy_clone_requires_explicit_source_once

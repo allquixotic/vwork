@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub const INSTRUCTIONS: &str = "Work virtually in vwork. Use repo_list and reuse registrations. For user-requested setup, repo_register imports committed state from an absolute repository path; repo_clone imports a selected URL into redb. All persistent Git objects, refs and source contents are in redb; no permanent source checkout. Use files_read/list/glob/search and workspace_info/status/diff/history instead of native filesystem or shell. Get the current revision before editing and pass expected_revision; reconcile conflicts. files_apply_patch accepts full-file replacements/deletions. Use package_list/run for configured npm/Cargo/pip/uv/CDK actions and workspace_run_task for other configured tools. External tools need files: package/task runs automatically use a tracked temporary copy and return its lease, expiry, exact revision, exit status and source_changes. Only request workspace_temporary when a specific filesystem-only tool cannot do its work virtually; explain why in purpose. Import wanted edits explicitly, then call temporary_release as soon as finished. Do not retain copies just in case. Use temporary_list to find forgotten copies and cleanup errors. Renew a lease before expiry if a tool still needs it. Expiry/startup cleanup saves bounded nonignored source changes into a separate recovery workspace and deletes the copy; dependencies, environments and build outputs are disposable. Save wanted artifacts before releasing. Never use discard_changes unless intentionally discarding those edits. Cleanup failures stay visible and block unlimited accumulation. Use workspace_export only for durable files the user explicitly wants to keep. Never claim success unless the tool reports success. Use storage_info for shared storage accounting; never create probe workspaces to measure sharing. Git objects deduplicate daemon-wide by object ID; edited blobs deduplicate by content hash. Base manifests share within a registration and commit. Forks share immutable history. Tasks, package configurations and global maintenance remain human CLI operations. CDK supports local synth/list actions, not deployments.";
+pub const INSTRUCTIONS: &str = "Work virtually in vwork. Use repo_list and reuse registrations. For user-requested setup, repo_register imports committed state from an absolute repository path; repo_clone imports a selected URL into redb. Use repo_fetch to refresh an existing registration from its saved source; supply source once for older imports if needed. Fetch never updates existing workspace snapshots; create a new workspace from the fetched reference when desired. All persistent Git objects, refs and source contents are in redb; no permanent source checkout. Use files_read/list/glob/search and workspace_info/status/diff/history instead of native filesystem or shell. Get the current revision before editing and pass expected_revision; reconcile conflicts. files_apply_patch accepts full-file replacements/deletions. Use package_list/run for configured npm/Cargo/pip/uv/CDK actions and workspace_run_task for other configured tools. External tools need files: package/task runs automatically use a tracked temporary copy and return its lease, expiry, exact revision, exit status and source_changes. Only request workspace_temporary when a specific filesystem-only tool cannot do its work virtually; explain why in purpose. Import wanted edits explicitly, then call temporary_release as soon as finished. Do not retain copies just in case. Use temporary_list to find forgotten copies and cleanup errors. Renew a lease before expiry if a tool still needs it. Expiry/startup cleanup saves bounded nonignored source changes into a separate recovery workspace and deletes the copy; dependencies, environments and build outputs are disposable. Save wanted artifacts before releasing. Never use discard_changes unless intentionally discarding those edits. Cleanup failures stay visible and block unlimited accumulation. Use workspace_export only for durable files the user explicitly wants to keep. Never claim success unless the tool reports success. Use storage_info for shared storage accounting; never create probe workspaces to measure sharing. Git objects deduplicate daemon-wide by object ID; edited blobs deduplicate by content hash. Base manifests share within a registration and commit. Forks share immutable history. Tasks, package configurations and global maintenance remain human CLI operations. CDK supports local synth/list actions, not deployments.";
 
 pub fn tools(bound: bool) -> Vec<Value> {
     let mut out = Vec::new();
@@ -21,7 +21,7 @@ pub fn tools(bound: bool) -> Vec<Value> {
                 required.push(name);
             }
         }
-        out.push(json!({"name":format!("vwork_{op}"),"description":desc,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read,"destructiveHint":!read,"idempotentHint":read,"openWorldHint":op == "repo_clone"}}));
+        out.push(json!({"name":format!("vwork_{op}"),"description":desc,"inputSchema":{"type":"object","properties":props,"required":required,"additionalProperties":false},"annotations":{"readOnlyHint":read,"destructiveHint":!read,"idempotentHint":read,"openWorldHint":op == "repo_clone" || op == "repo_fetch"}}));
     };
     let w = ("workspace", "string", true);
     let e = ("expected_revision", "string", true);
@@ -42,7 +42,7 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "repo_register",
-        "Import all Git objects, refs and committed source from an absolute existing repository path into redb under a new ID. Original checkout/index/refs are preserved; later source changes require a new import. Reuse this registration across virtual workspaces.",
+        "Import all Git objects, refs and committed source from an absolute existing repository path into redb under a new ID. Original checkout/index/refs are preserved; repo_fetch refreshes this registration later. Reuse this registration across virtual workspaces.",
         vec![("repo", "string", true), ("path", "string", true)],
         false,
     );
@@ -50,6 +50,16 @@ pub fn tools(bound: bool) -> Vec<Value> {
         "repo_clone",
         "Clone a user-selected Git source into redb under a new repository ID. All persistent objects and refs stay in redb; temporary transfer packs are cleaned after import/restart. Accepts HTTPS/SSH/Git/file URLs, SSH host:path or an absolute local repository path. No URL passwords/query tokens or arbitrary Git arguments. Then create virtual workspaces from HEAD or registered branch names.",
         vec![("repo", "string", true), ("source", "string", true)],
+        false,
+    );
+    add(
+        "repo_fetch",
+        "Fetch new Git objects and branch/tag refs into an existing redb repository using its saved source. Optional source selects a Git URL/absolute repository path and is saved after success; older registrations may need it once. Existing workspaces stay pinned, private commits are preserved. Create a workspace from the fetched ref to use new source. prune=true removes vanished upstream branches/tags; default keeps them. No checkout or Git CLI transport.",
+        vec![
+            ("repo", "string", true),
+            ("source", "string", false),
+            ("prune", "boolean", false),
+        ],
         false,
     );
     add(
@@ -180,18 +190,36 @@ pub fn tools(bound: bool) -> Vec<Value> {
         vec![w, e, p, ("recursive", "boolean", false)],
         false,
     );
-    for op in ["files_copy", "files_rename"] {
+    for (op, description) in [
+        (
+            "files_copy",
+            "Copy a virtual file to a new path, sharing its content blob and retaining the original. Destination must not exist.",
+        ),
+        (
+            "files_rename",
+            "Move a virtual file to a new path, sharing its content blob and deleting the original path. Destination must not exist.",
+        ),
+    ] {
         add(
             op,
-            "Copy or rename a virtual file without copying its content blob. Destination must not exist.",
+            description,
             vec![w, e, p, ("destination", "string", true)],
             false,
         );
     }
-    for op in ["workspace_status", "workspace_diff"] {
+    for (op, description) in [
+        (
+            "workspace_status",
+            "List changed paths and change kinds relative to the base Git commit or against_revision. Use workspace_diff for patch text.",
+        ),
+        (
+            "workspace_diff",
+            "Return bounded unified patch text for virtual changes relative to the base Git commit or against_revision, plus changed-path information.",
+        ),
+    ] {
         add(
             op,
-            "Compare virtual content to its base Git commit, or against_revision. Diff output is bounded.",
+            description,
             vec![w, ("against_revision", "string", false), lim, off],
             true,
         );

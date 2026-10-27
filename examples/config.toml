@@ -10,3 +10,9 @@ temporary_ttl_seconds = 1800
 temporary_max_ttl_seconds = 86400
 max_temporary_copies = 4
 max_recovery_bytes = 134217728
+
+# Automatic compaction: hourly, input idle >5 min, estimated free space >1 GB
+auto_compact = true
+compact_interval_seconds = 3600
+compact_idle_seconds = 300
+compact_min_reclaim_bytes = 1000000000

@@ -25,6 +25,7 @@ Use forward slashes for all **virtual** paths, on every OS.
 | `storage_info` | none | Read-only daemon storage counters, shared manifests/blobs and deduplication scopes |
 | `repo_list` | none | Registered IDs/provenance/refs |
 | `repo_register` | `repo`, `path` | Import existing repository objects/refs into redb |
+| `repo_fetch` | `repo`, optional `source`, `prune` | Refresh saved origin using incremental libgit2 transfer; atomically update refs, preserve workspace snapshots |
 | `repo_clone` | `repo`, `source` | Clone a selected URL or local repo into redb |
 | `workspace_temporary` | `expected_revision`, `purpose`, optional `ttl_seconds` | Tracked temporary filesystem copy |
 | `temporary_list` | none | Active copies, cleanup failures, transfer staging, recent recovery workspaces |
@@ -59,7 +60,7 @@ Use forward slashes for all **virtual** paths, on every OS.
 | `package_run` | `expected_revision`, `project`, `action`, optional `lease` | Serialized package action; reports physical source/input changes |
 | `workspace_drop` | `expected_revision` | Remove one workspace reference |
 
-`temporary_list`, `temporary_renew`, `temporary_release`, `repo_register`, `repo_clone`, `storage_info`, `repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.
+`temporary_list`, `temporary_renew`, `temporary_release`, `repo_register`, `repo_clone`, `repo_fetch`, `storage_info`, `repo_list`, `repo_log`, `workspace_list`, `task_list` and `package_list` do not use a workspace.
 A newly created workspace requires a new explicit ID, even when the bridge is
 bound to another existing one.
 
@@ -74,6 +75,7 @@ Common replacements:
 | `cp`, `mv`, `rm -r` | `files_copy`, `files_rename`, `files_delete` |
 | `git worktree add` | `workspace_create` or `workspace_fork` |
 | `git status`, `git diff`, undo | `workspace_status`, `workspace_diff`, `workspace_restore` |
+| `git fetch` | `repo_fetch` (same registration, existing workspaces unchanged) |
 | `git log` | `repo_log` or virtual `workspace_history` |
 | `git merge` | `workspace_merge` (whole-file conflict semantics) |
 | `git commit` | `workspace_commit` (snapshot export semantics) |
@@ -117,7 +119,9 @@ These are deliberately absent from the MCP tool list:
 
 | Operation | Arguments | Purpose |
 |---|---|---|
-| `health` | none | Version/schema/compression |
+| `health` | none | Version/schema/compression/startup recovery report |
+| `database_compact` | none | Exclusive online GC, preflight and threshold-gated compaction |
+| `maintenance_status` | none | Current state, last completion/skip/error |
 | `task_set` | `repo`, `name`, `program`, optional `args`, `cwd`, `timeout_seconds`, `env` | Save/replace allowed task |
 | `package_configure` | `repo`, `name`, `manager`, optional `path`, `program`, `args`, `env`, `offline`, `requirements`, `inputs`, `scripts` | Save/replace package project; see [package guide](packages.md) |
 | `stats` | none | DB file size, blob count/compressed bytes, revision/workspace/repo counts |
@@ -126,8 +130,8 @@ These are deliberately absent from the MCP tool list:
 | `gc` | none | Reclaim unreachable revision/blob records for reuse |
 
 CLI lifecycle commands are `init`, `start`, `serve`, `stop`, `doctor`, `compact`,
-`goose`, `mcp`, `hook`, and `package`; run `--help` on each. `compact` is offline and
-rejects an active daemon. The HTTP transport is local and authenticated; it is an
+`goose`, `mcp`, `hook`, and `package`; run `--help` on each. `compact` requests
+maintenance from the running daemon or takes exclusive ownership when stopped. The HTTP transport is local and authenticated; it is an
 implementation transport, not a hosted/public API.
 
 ## Maintenance
@@ -144,9 +148,25 @@ exported-snapshot pins reference it.
    with repo ID and revision. It removes only the database history pin; the Git
    commit/ref remains. Do this only when virtual-history restoration is unnecessary.
 4. Run `vwork --home <state> call gc`. Freed pages become reusable.
-5. To reduce physical DB file length, stop the daemon, back up state, run
-   `vwork --home <state> compact`, then start it again. Compaction requires working
-   free space and exclusive database access.
+5. Run `vwork --home <state> compact`, or use Fastrock's Virtual workspaces window,
+   **Storage → Compact selected vwork store**. Active jobs defer maintenance;
+   requests during compaction receive a retryable busy error. The daemon keeps its
+   connection identity. The result reports reclaimed bytes or why it skipped.
+
+Automatic evaluation runs once per hour, after more than five minutes of OS input
+inactivity. Unknown idle state skips maintenance. Windows uses `GetLastInputInfo`;
+macOS uses IOKit through `system-idle-time`. Other platforms currently skip automatic
+checks. A return to the keyboard does not interrupt an already started atomic operation.
+The interval, idle threshold and enable switch are configurable in `config.toml`.
+
+Both manual and automatic operations run GC before examining allocated-page stats,
+then compact only when the conservative estimate exceeds **1,000,000,000 bytes** by
+default (`compact_min_reclaim_bytes`). A file smaller than the threshold skips the
+scan. The estimate subtracts live/metadata pages and a header allowance; compressed
+content bytes and internal page slack are not treated as reclaimable disk space.
+This is substantially less work than moving live pages. History still held by
+workspaces, forks, or private Git commits is retained. Compaction verifies database
+integrity afterward; a failure blocks further operations until restart/recovery.
 
 Base manifests and imported Git history remain in redb; there is no repository
 unregister/history-pruning operation. GC also reclaims object records left by
@@ -166,9 +186,37 @@ register the existing original repos again.
 
 ## Recovery and troubleshooting
 
+At startup, existing databases are opened without creation. Empty/truncated or
+unopenable files cause a clear error; vwork never silently replaces them. redb's
+native crash recovery restores the last committed state, followed by an integrity
+check before requests are accepted. A pre-check copy is written as `workspaces.redb.recovery.partial`, then published
+as `workspaces.redb.recovery.bak` after a successful repair; one snapshot plus one
+partial copy bounds recovery evidence. Failed checks preserve earlier backup evidence. A repaired startup retains that snapshot; the next clean
+startup replaces then removes it after verification. Keep independent backups
+for long-term recovery. Every existing startup scans integrity and temporarily
+needs approximately one extra database-sized file, so large starts can take time.
+
+If validation fails, serving stops and the original or pre-check copy is retained.
+Inspect `daemon.log`; restore a known-good backup **with the daemon stopped**.
+A snapshot of damaged bytes is diagnostic evidence, not a promise of recovery.
+Hardware damage beyond redb's recoverable committed state requires a backup.
+
+### Fetching updates
+
+`repo_fetch` uses a stored source URL/path, noninteractive Git credential helpers
+or the SSH agent. Older imported registrations can supply `source` once. No pull,
+merge, push, or arbitrary Git arguments are exposed. Failed transfers leave refs
+unchanged. By default vanished refs remain; `prune: true` removes vanished upstream
+branch/tag refs while preserving `refs/vwork/` commits and pinned workspaces.
+Only newly received packs are staged on disk, journaled and removed after import
+or at restart. Existing objects are read directly from redb for negotiation;
+no persistent Git object store or checkout is created. Create a new workspace
+from `origin/main` (or the appropriate branch) to use the updated snapshot.
+
+
 - **Connection failed:** run `start` and inspect `<home>/daemon.log`. All clients
   must use the same absolute `--home`. `doctor` verifies Git and connectivity.
-- **Already owned/compaction denied:** stop the daemon. Never delete a lock file
+- **Compaction busy:** wait for active operations and retry. Never delete a lock file
   to defeat a running owner. The OS releases the lock on process exit.
 - **Revision conflict:** inspect current content and reconcile, then edit with the
   new head. A successful build of an earlier head does not validate newer changes.
@@ -187,7 +235,7 @@ register the existing original repos again.
   supports copied virtual environments and ensurepip; test `python -m venv --copies`
   with that interpreter. See [package prerequisites](packages.md).
 - **Disk full:** stop creating builds/exports. Free disposable artifacts, then use
-  GC and offline compaction. Successful transactions are durable; a failed write
+  GC and compaction. Successful transactions are durable; a failed write
   is not reported as success. Back up before recovery operations.
 - **No live Goose test here:** run the client smoke test in `goose.md`. Server
   protocol tests do not prove your Goose version or LLM follows the prompt.

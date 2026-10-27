@@ -1,4 +1,5 @@
 use anyhow::Result;
+use redb::ReadableDatabase;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command, sync::Arc};
 use tempfile::TempDir;
@@ -100,6 +101,200 @@ fn fork_isolation_and_reopen() -> Result<()> {
     drop(_temp);
     Ok(())
 }
+
+#[test]
+fn v25_existing_empty_database() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let path = temp.path().join("workspaces.redb");
+    std::fs::write(&path, [])?;
+    assert!(Engine::open(temp.path(), Config::default()).is_err());
+    assert_eq!(std::fs::metadata(path)?.len(), 0);
+    Ok(())
+}
+
+#[test]
+fn v25_crash_writer_child() -> Result<()> {
+    let Some(home) = std::env::var_os("VWORK_CRASH_HOME") else {
+        return Ok(());
+    };
+    let engine = Engine::open(home, Config::default())?;
+    let tx = engine.db.begin_write()?;
+    {
+        let mut table = tx.open_table(redb::TableDefinition::<&str, &str>::new("crash_fixture"))?;
+        table.insert("committed", "must survive sudden termination")?;
+    }
+    tx.commit()?;
+    // Process exit skips Database::drop, like termination after an acknowledged commit.
+    std::process::exit(0);
+}
+
+#[test]
+fn v25_crash_recovery_and_corruption_preservation() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let child = Command::new(std::env::current_exe()?)
+        .args(["--exact", "v25_crash_writer_child", "--nocapture"])
+        .env("VWORK_CRASH_HOME", temp.path())
+        .output()?;
+    assert!(
+        child.status.success(),
+        "{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let engine = Engine::open(temp.path(), Config::default())?;
+    assert_eq!(engine.recovery["state"], "recovered");
+    assert!(temp.path().join("workspaces.redb.recovery.bak").is_file());
+    {
+        let tx = engine.db.begin_read()?;
+        let table = tx.open_table(redb::TableDefinition::<&str, &str>::new("crash_fixture"))?;
+        assert_eq!(
+            table.get("committed")?.unwrap().value(),
+            "must survive sudden termination"
+        );
+    }
+    drop(engine);
+    let reopened = Engine::open(temp.path(), Config::default())?;
+    assert_eq!(reopened.recovery["state"], "clean");
+    drop(reopened);
+    let path = temp.path().join("workspaces.redb");
+    let mut bytes = std::fs::read(&path)?;
+    bytes[..9].fill(0xFE);
+    std::fs::write(&path, &bytes)?;
+    let old_backup = temp.path().join("workspaces.redb.recovery.bak");
+    std::fs::write(&old_backup, b"preserve earlier recovery evidence")?;
+    assert!(Engine::open(temp.path(), Config::default()).is_err());
+    assert_eq!(
+        std::fs::read(&old_backup)?,
+        b"preserve earlier recovery evidence"
+    );
+    assert_eq!(
+        std::fs::read(&path)?,
+        bytes,
+        "corrupt input must not be replaced"
+    );
+    Ok(())
+}
+
+#[test]
+fn v26_fetch_updates_refs() -> Result<()> {
+    let f = Fixture::new();
+    let source = format!(
+        "file:///{}",
+        f.root
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+    f.engine
+        .call("repo_clone", &json!({"repo":"mirror","source":source}))?;
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"mirror","workspace":"old"}),
+    )?;
+    let old = f.head("old");
+    std::fs::write(f.root.join("README.md"), "fetched\n")?;
+    git(&f.root, &["add", "."]);
+    git(&f.root, &["commit", "-m", "new upstream"]);
+    let expected = git(&f.root, &["rev-parse", "HEAD"]);
+    let response = protocol::mcp_response(&json!({"id":26,"method":"tools/call","params":{"name":"vwork_repo_fetch","arguments":{"repo":"mirror"}}}), Some("old"), |op,args| f.engine.call(op,args)).unwrap();
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    let result: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
+    assert_eq!(result["head"], expected);
+    assert_eq!(f.head("old"), old);
+    assert_eq!(f.read("old", "README.md"), "base");
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"mirror","workspace":"new"}),
+    )?;
+    assert_eq!(f.read("new", "README.md"), "fetched");
+    let objects = f.engine.call("storage_info", &json!({}))?["git_objects"].clone();
+    let repeated = f.engine.call("repo_fetch", &json!({"repo":"mirror"}))?;
+    assert_eq!(repeated["received_objects"], 0);
+    assert_eq!(
+        f.engine.call("storage_info", &json!({}))?["git_objects"],
+        objects
+    );
+    assert_eq!(std::fs::read_dir(f.home.join("transfers"))?.count(), 0);
+    std::fs::rename(&f.root, f.root.with_extension("removed"))?;
+    assert_eq!(f.read("new", "README.md"), "fetched");
+    assert_eq!(f.read("old", "README.md"), "base");
+    Ok(())
+}
+#[test]
+fn v26_fetch_failure_prune_and_private_commits() -> Result<()> {
+    let f = Fixture::new();
+    git(&f.root, &["branch", "obsolete"]);
+    f.engine.call("repo_fetch", &json!({"repo":"repo"}))?;
+    assert!(
+        f.engine
+            .repo("repo")?
+            .refs
+            .contains_key("refs/heads/obsolete")
+    );
+    let private = f.engine.call(
+        "workspace_commit",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"message":"keep private"}),
+    )?;
+    let before = f.engine.repo("repo")?.refs;
+    assert!(
+        f.engine
+            .call(
+                "repo_fetch",
+                &json!({"repo":"repo","source":f.root.join("absent")})
+            )
+            .is_err()
+    );
+    assert_eq!(f.engine.repo("repo")?.refs, before);
+    git(&f.root, &["branch", "-D", "obsolete"]);
+    f.engine.call("repo_fetch", &json!({"repo":"repo"}))?;
+    assert!(
+        f.engine
+            .repo("repo")?
+            .refs
+            .contains_key("refs/heads/obsolete")
+    );
+    f.engine
+        .call("repo_fetch", &json!({"repo":"repo","prune":true}))?;
+    let refs = f.engine.repo("repo")?.refs;
+    assert!(!refs.contains_key("refs/heads/obsolete"));
+    assert!(
+        refs.iter()
+            .any(|(name, oid)| name.starts_with("refs/vwork/")
+                && private["commit"].as_str() == Some(oid.as_str()))
+    );
+    assert_eq!(f.read("one", "README.md"), "base");
+    assert_eq!(std::fs::read_dir(f.home.join("transfers"))?.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn v26_legacy_clone_requires_explicit_source_once() -> Result<()> {
+    let f = Fixture::new();
+    f.engine
+        .call("repo_clone", &json!({"repo":"oldclone","source":f.root}))?;
+    let mut repo = f.engine.repo("oldclone")?;
+    repo.fetch_source = None;
+    assert!(repo.git_dir.as_os_str().is_empty());
+    let tx = f.engine.db.begin_write()?;
+    tx.open_table(redb::TableDefinition::<&str, &[u8]>::new("records_v1"))?
+        .insert("r/oldclone", serde_json::to_vec(&repo)?.as_slice())?;
+    tx.commit()?;
+    let error = f
+        .engine
+        .call("repo_fetch", &json!({"repo":"oldclone"}))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("no saved fetch source"),
+        "{error}"
+    );
+    f.engine
+        .call("repo_fetch", &json!({"repo":"oldclone","source":f.root}))?;
+    assert!(f.engine.repo("oldclone")?.fetch_source.is_some());
+    f.engine.call("repo_fetch", &json!({"repo":"oldclone"}))?;
+    Ok(())
+}
+
 #[test]
 fn optimistic_conflicts() -> Result<()> {
     let f = Fixture::new();
@@ -332,7 +527,19 @@ fn protocol_and_hooks() -> Result<()> {
             .unwrap()
             .contains("vwork_package_list/run")
     );
-    assert!(!protocol::tools(true).iter().any(|v| v["name"] == "shell"));
+    let tools = protocol::tools(true);
+    for name in ["shell", "vwork_database_compact"] {
+        assert!(!tools.iter().any(|v| v["name"] == name));
+    }
+    for (a, b) in [
+        ("vwork_files_copy", "vwork_files_rename"),
+        ("vwork_workspace_status", "vwork_workspace_diff"),
+    ] {
+        assert_ne!(
+            tools.iter().find(|t| t["name"] == a).unwrap()["description"],
+            tools.iter().find(|t| t["name"] == b).unwrap()["description"]
+        );
+    }
     assert!(
         protocol::tools(true)
             .iter()

@@ -258,3 +258,15 @@ not a guarantee for another filesystem or workload.
   `d063ab84f177b8fb80d76d48dc76d2cbea926d271586b8b5a816a74c18338839`.
 - S3's mutable key remains at the last explicitly requested upload (0.2.2).
   Publishing this GitHub release does not invoke the manual-only upload skill.
+
+## 0.3.1 pre-release verification
+
+Native Windows fixtures on games passed: two maintenance tests and 44 workspace
+integration tests (four package/distribution tests reserved for hosted CI).
+The new coverage checks actual free-page compaction with live content preserved,
+hourly scheduling and idle/busy boundaries, abrupt process termination after a
+committed transaction, corrupted-header and earlier-backup preservation, online
+CLI/RPC identity reuse, incremental fetch, pruning, private commits, pinned
+workspaces, MCP dispatch, and legacy imports requiring a source only once.
+Mac compilation and strict all-target Clippy passed; no tests/GUI ran on Sean's Mac.
+Full Windows/macOS package fixtures and signed release evidence follow in CI.
