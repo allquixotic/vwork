@@ -63,9 +63,9 @@ T10|x|Model-visible clone/register with shared Git objects in redb; preserve oth
 
 T11|x|redb Git object backend, migration, library Git operations|V1,V3,V6,V11,V19,V20,V21,I.storage
 T12|x|Recoverable leased temporary copies and uv/CDK package actions|V4,V7,V9,V12,V13,V22,V23,I.rpc,I.goose
-T13|~|Online/manual and hourly idle-aware compaction; crash/corruption recovery|V7,V9,V16,V24,V25,I.cli,I.rpc,I.storage
-T14|~|Incremental fetch into existing redb registrations; distinct MCP tool descriptions|V20,V21,V26,I.rpc,I.goose
-T15|~|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws upload|V10,V24,V25,V26,I.release
+T13|x|Online/manual and hourly idle-aware compaction; crash/corruption recovery|V7,V9,V16,V24,V25,I.cli,I.rpc,I.storage
+T14|x|Incremental fetch into existing redb registrations; distinct MCP tool descriptions|V20,V21,V26,I.rpc,I.goose
+T15|x|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws upload|V10,V24,V25,V26,I.release
 
 # §B
 id|date|cause|fix

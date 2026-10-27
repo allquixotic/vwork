@@ -270,3 +270,26 @@ CLI/RPC identity reuse, incremental fetch, pruning, private commits, pinned
 workspaces, MCP dispatch, and legacy imports requiring a source only once.
 Mac compilation and strict all-target Clippy passed; no tests/GUI ran on Sean's Mac.
 Full Windows/macOS package fixtures and signed release evidence follow in CI.
+
+## 0.3.1 published release — 2026-10-26
+
+- [CI 40425570540](https://github.com/allquixotic/vwork/actions/runs/40425570540)
+  passed formatting, strict Clippy and all fixtures: 59 Windows / 58 macOS tests,
+  including actual uv/CDK, npm/Cargo/pip and distribution packaging. No local Mac tests ran.
+- [Release run 40425591796](https://github.com/allquixotic/vwork/actions/runs/40425591796)
+  passed validation, release build, Azure Authenticode/RFC 3161 signing, publisher
+  checks, signed native lifecycle, packaging and provenance. Source:
+  `60a2602667357347282a2047c64bb4b680ffce61`.
+- [v0.3.1](https://github.com/allquixotic/vwork/releases/tag/v0.3.1) is public/latest.
+  Downloaded ZIP: 4,284,361 bytes; SHA-256
+  `c9ab0a0e1718142f401c31a95ae54f86951c7614cd4e5d8a5c0bd82964acb99b`.
+  Signed executable SHA-256:
+  `c25358e723f096a88482bb509f784b8939563c7a05eb8d6880254e4124ac776a`.
+  Downloaded bytes match GitHub's digest, checksum file and signing receipt;
+  provenance verified against the exact source/tag/release workflow.
+- Publisher: Sean McNamara; certificate SHA-1
+  `F65E5B72C3747B4450FC367E1AD28B15F1418729`; Microsoft timestamp present.
+- The explicitly invoked ship-to-aws helper overwrote
+  [vwork-windows-x64.zip](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip)
+  with identical bytes using REDUCED_REDUNDANCY. Anonymous HEAD size/class and
+  full-download SHA-256 passed; anonymous listing remained 403.
