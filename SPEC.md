@@ -108,3 +108,5 @@ B26|2026-10-26|Legacy clones have empty provenance paths; attempting Git discove
 B27|2026-10-26|Strict generated config and blanket hook prevented host reads/scripts and contradicted broad MCP access; three V27 baseline tests fail on Windows|V27; enable Developer, preserve other MCPs, target direct Git creation and share one prompt
 
 B28|2026-10-26|Wrapper detector scanned argument data after the executed shell command and blocked a harmless echo; V27 regression reproduced on Windows|V27; inspect only the first executed command string, allow script/unknown/syntax-check forms; cancel initial release before publication
+
+B29|2026-10-26|Download verification compared Windows CRLF packaged prompt bytes directly with local LF source|Normalize line endings only for source-text comparisons; retain exact ZIP/executable cryptographic checks; no runtime change

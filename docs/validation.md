@@ -293,3 +293,38 @@ Full Windows/macOS package fixtures and signed release evidence follow in CI.
   [vwork-windows-x64.zip](https://fastrock-dl-582961286906-us-east-1-an.s3.us-east-1.amazonaws.com/vwork-windows-x64.zip)
   with identical bytes using REDUCED_REDUNDANCY. Anonymous HEAD size/class and
   full-download SHA-256 passed; anonymous listing remained 403.
+
+
+## 0.3.2 published release — 2026-10-26
+
+- Shared Goose policy enables host reads/edits/scripts and other MCPs, defaults
+  repository work to vwork, and retains indefinite workspace_export. A narrow
+  optional hook detects direct unmanaged Git creation; no filesystem sandbox claim.
+- Three new V27 policy tests failed against the strict baseline on native Windows,
+  then passed after implementation. A shell-argument read false positive was also
+  reproduced and fixed before publication (B28). Native checks passed 3 policy,
+  9 daemon and 44 workspace fixtures; four package/distribution cases ran in CI.
+- [CI 40428428375](https://github.com/allquixotic/vwork/actions/runs/40428428375)
+  passed strict lint and all tests: **62 Windows / 61 macOS**, including package
+  tools and ZIP fixtures. No tests/GUI ran on Sean's Mac; local lint/check passed.
+- [Release 40428430764](https://github.com/allquixotic/vwork/actions/runs/40428430764)
+  built, signed, timestamped, verified and published
+  [v0.3.2+build.1](https://github.com/allquixotic/vwork/releases/tag/v0.3.2%2Bbuild.1)
+  from `8676d41cf15733340943936fbf771c9643910199`. The original v0.3.2 attempt was
+  cancelled before publication; its tag was preserved.
+- Downloaded ZIP: 4,284,699 bytes; SHA-256
+  `98cf400c07643d94a4cc07716bf9fd67d7ad3f878b0ff2256b15131b9bbb2a84`.
+  Executable SHA-256:
+  `54da723088fc1b0736c663611c483df1604c7be28397b9f2d16cd0e031f0763d`.
+  GitHub digest, checksum file and signing receipt match; provenance verified for
+  the exact repository/workflow/tag/source commit. Packaged policy/prompt sources
+  match after normalizing Windows checkout line endings.
+- Independent Windows verification of the downloaded executable: signature Valid,
+  Sean McNamara publisher, certificate SHA-1
+  `F65E5B72C3747B4450FC367E1AD28B15F1418729`, Microsoft timestamp,
+  version `vwork 0.3.2`; all four native hook checks passed, including the shell
+  argument read regression. The verification extraction was removed afterward.
+- Existing Goose configuration is not rewritten automatically. Regenerate setup,
+  enable Developer, replace the old vwork hints/hook and start a new conversation.
+  No Fastrock binary update is needed. S3 remains at the last explicitly requested
+  0.3.1 upload; ship-to-aws was not invoked for this release.
