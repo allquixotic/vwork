@@ -343,3 +343,37 @@ and provenance attestation. Downloaded ZIP SHA-256:
 `81ad8e8df7b6423ff47c994c4cbb263307036d27b4cffd97fd42d1232eb6732d`.
 Verified attestation locally and Authenticode on `games`: valid Sean McNamara
 publisher, Microsoft RFC 3161 timestamp. Release LTO is off.
+
+## Startup and cleanup CI races, 2026-10-29
+
+Commit `6596b05390a67d4e79177197c213ff008025c3f7` fixes the startup snapshot lock
+handoff reported by [macOS CI 40898192142](https://github.com/allquixotic/vwork/actions/runs/40898192142).
+Closing the snapshot's file could leave its lock alive through an inherited
+open file description. The snapshot now explicitly unlocks before redb opens;
+a guard also unlocks on snapshot/startup error paths. The separate startup guard
+still serializes the snapshot/open handoff and redb retains database ownership.
+A deterministic test keeps a duplicated descriptor alive, verifies the old
+close-only behavior on Unix, and checks both explicit and scoped release.
+
+The earlier [Windows CI 40429483176](https://github.com/allquixotic/vwork/actions/runs/40429483176)
+cleanup failure sampled an intermediate `deleting` lease after its tree had
+already disappeared. The test now awaits the durable active/history update,
+with the original deadline, and checks removal of the full lease directory.
+Production cleanup ordering remains unchanged.
+
+[CI 40903317117](https://github.com/allquixotic/vwork/actions/runs/40903317117)
+passed formatting, strict Clippy and 64 tests on each of Windows and macOS.
+Both platforms also passed ten repetitions of the five Git-storage regressions
+and five repetitions of periodic daemon cleanup. No tests ran on Sean's Mac.
+
+[Release CI 40904520460](https://github.com/allquixotic/vwork/actions/runs/40904520460)
+passed validation, signed native lifecycle checks and publication of
+[v0.3.4](https://github.com/allquixotic/vwork/releases/tag/v0.3.4) from the same
+source commit. Downloaded ZIP SHA-256:
+`106866d956235abaed7b764f04d412c5878e2d5abfc888209551075a1aaf80c9`.
+The checksum file and signing receipt match the downloaded bytes; provenance
+verification passed for the exact source commit, tag and release workflow.
+Independent verification on `games` confirmed a Valid Authenticode signature,
+Sean McNamara publisher and Microsoft timestamp. Executable SHA-256:
+`d657d6b00db05d5087ccd6cfd7db30cb45eb6cdb75aa8418ad8dfdb6b086ab12`.
+Release LTO remains off. Fastrock 0.3.3 needs no binary update for this fix.
