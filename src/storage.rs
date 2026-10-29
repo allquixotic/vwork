@@ -5,6 +5,29 @@ use redb::{Database, DatabaseError};
 use serde_json::{Value, json};
 use std::path::Path;
 
+/// Closing a file does not release flock while a fork/duplicate still holds
+/// its open description. Release explicitly at handoff and on error paths.
+struct ExclusiveLock<'a>(Option<&'a std::fs::File>);
+
+impl<'a> ExclusiveLock<'a> {
+    fn acquire(file: &'a std::fs::File) -> std::io::Result<Self> {
+        file.try_lock_exclusive()?;
+        Ok(Self(Some(file)))
+    }
+
+    fn release(mut self) -> std::io::Result<()> {
+        FileExt::unlock(self.0.take().unwrap())
+    }
+}
+
+impl Drop for ExclusiveLock<'_> {
+    fn drop(&mut self) {
+        if let Some(file) = self.0 {
+            let _ = FileExt::unlock(file);
+        }
+    }
+}
+
 fn snapshot(path: &Path) -> Result<std::path::PathBuf> {
     let backup = path.with_extension("redb.recovery.bak");
     let partial = path.with_extension("redb.recovery.partial");
@@ -12,19 +35,18 @@ fn snapshot(path: &Path) -> Result<std::path::PathBuf> {
     crate::engine::safe_ancestors(&partial)?;
     // Copy through the handle holding the lock. Reopening the same file for
     // std::fs::copy is rejected by Windows byte-range locking.
-    let mut input = std::fs::OpenOptions::new()
+    let input = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(path)?;
-    input
-        .try_lock_exclusive()
-        .context("database is owned by another process")?;
+    let lock = ExclusiveLock::acquire(&input).context("database is owned by another process")?;
     let mut output = std::fs::File::create(&partial)?;
-    std::io::copy(&mut input, &mut output).context("copy database before integrity checking")?;
+    std::io::copy(&mut &input, &mut output).context("copy database before integrity checking")?;
     output.sync_all()?;
     drop(output);
     #[cfg(unix)]
     std::fs::File::open(path.parent().context("database has no parent")?)?.sync_all()?;
+    lock.release().context("release database snapshot lock")?;
     Ok(partial)
 }
 
@@ -38,8 +60,8 @@ pub fn open(path: &Path) -> Result<(Database, Value)> {
         .read(true)
         .write(true)
         .open(lock_path)?;
-    lock.try_lock_exclusive()
-        .context("database startup/recovery already in progress")?;
+    let _startup =
+        ExclusiveLock::acquire(&lock).context("database startup/recovery already in progress")?;
     if !path.exists() {
         return Ok((
             Database::create(path)?,
@@ -97,4 +119,61 @@ pub fn open(path: &Path) -> Result<(Database, Value)> {
         "integrity_checked":true,"backup":if recovered {Some(backup)} else {None}});
     eprintln!("Database integrity verified ({})", report["state"]);
     Ok((db, report))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v29_handoff_releases_lock_while_duplicate_survives() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        for explicit in [false, true] {
+            let path = temp.path().join(format!("guard-{explicit}"));
+            let file = std::fs::File::create(&path)?;
+            let guard = ExclusiveLock::acquire(&file)?;
+            // Deterministically model a descriptor inherited between fork and
+            // exec, including the CLOEXEC case before exec closes it.
+            let inherited = file.try_clone()?;
+            let observer = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)?;
+            assert!(observer.try_lock_exclusive().is_err());
+            if explicit {
+                guard.release()?;
+            } else {
+                drop(guard); // Early return/error cleanup uses the same path.
+            }
+            drop(file);
+            observer
+                .try_lock_exclusive()
+                .context("handoff must not wait for child descriptor close")?;
+            FileExt::unlock(&observer)?;
+            drop(inherited);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn v29_close_alone_retains_inherited_lock() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("inherited");
+        let file = std::fs::File::create(&path)?;
+        file.try_lock_exclusive()?;
+        let inherited = file.try_clone()?;
+        drop(file);
+        let observer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        assert!(
+            observer.try_lock_exclusive().is_err(),
+            "control must reproduce the old close-only behavior"
+        );
+        FileExt::unlock(&inherited)?;
+        observer.try_lock_exclusive()?;
+        Ok(())
+    }
 }

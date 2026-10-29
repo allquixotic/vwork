@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.4
+
+- Explicitly release snapshot and startup locks so inherited file descriptors cannot cause spurious database-in-use failures during reopening.
+- Add deterministic lock-handoff regressions and repeated Windows/macOS lifecycle checks.
+- Wait for durable lease cleanup completion in the periodic-cleanup test, preserving the existing crash-safe deletion order.
+
 ## 0.3.3
 
 - Serve MCP requests through the existing authenticated daemon API, with a separate workspace binding per request. Compatible clients can reuse the daemon without spawning a stdio bridge for every conversation.

@@ -36,3 +36,13 @@ jobs:
         env:
           VWORK_TEST_PYTHON: python
           VWORK_TEST_PACKAGE_TOOLS: "1"
+      - name: Repeat lifecycle race regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..10}; do
+            cargo +stable test --locked --test workspaces v21_
+          done
+          for attempt in {1..5}; do
+            cargo +stable test --locked --test daemon v22_periodic_cleanup -- --exact
+          done

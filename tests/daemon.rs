@@ -608,9 +608,24 @@ fn v22_periodic_cleanup() -> Result<()> {
         !path.exists(),
         "daemon must reap expired copies without another model request"
     );
-    assert_eq!(
-        vwork::transport::connect(&home, "temporary_list", &json!({}))?["active"],
-        json!([])
-    );
+    // Removing the tree precedes the final durable lease/history transaction.
+    // Observe completion of both phases rather than racing that commit.
+    loop {
+        let listing = vwork::transport::connect(&home, "temporary_list", &json!({}))?;
+        let released = listing["recent"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["lease"] == lease["id"] && entry["released"] == true);
+        if listing["active"] == json!([]) && released {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cleanup did not finish its durable update: {listing}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(!path.parent().unwrap().exists());
     Ok(())
 }
