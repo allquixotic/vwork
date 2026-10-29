@@ -182,7 +182,7 @@ fn v28_shared_mcp_preserves_bindings_and_owner() -> Result<()> {
                 let info = call(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"vwork_workspace_info","arguments":{}}}))?;
                 assert_eq!(info["result"]["isError"], false);
                 let content: Value = serde_json::from_str(info["result"]["content"][0]["text"].as_str().unwrap())?;
-                assert_eq!(content["id"], workspace);
+                assert_eq!(content["workspace"]["id"], workspace);
             }
             let denied = call(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"vwork_database_compact","arguments":{}}}))?;
             assert_eq!(denied["error"]["code"], -32602);
@@ -213,6 +213,18 @@ fn v28_shared_mcp_preserves_bindings_and_owner() -> Result<()> {
         json!({"operation":"mcp","arguments":{"request":{"id":1,"method":"tools/list"}}}),
     );
     assert!(matches!(unauthorized, Err(ureq::Error::StatusCode(401))));
+    for (header, value) in [("Origin", "http://127.0.0.1"), ("Host", "example.invalid")] {
+        let rejected = ureq::post(connection["url"].as_str().unwrap())
+            .header(
+                "Authorization",
+                &format!("Bearer {}", connection["token"].as_str().unwrap()),
+            )
+            .header(header, value)
+            .send_json(
+                json!({"operation":"mcp","arguments":{"request":{"id":1,"method":"tools/list"}}}),
+            );
+        assert!(matches!(rejected, Err(ureq::Error::StatusCode(403))));
+    }
     assert_eq!(std::fs::read(home.join("connection.json"))?, identity);
     Ok(())
 }

@@ -150,6 +150,17 @@ pub fn serve(home: &Path) -> Result<()> {
                 .respond(tiny_http::Response::from_string("unauthorized").with_status_code(401));
             continue;
         }
+        if request.headers().iter().any(|h| h.field.equiv("Origin"))
+            || !request
+                .headers()
+                .iter()
+                .any(|h| h.field.equiv("Host") && h.value.as_str() == address.to_string())
+        {
+            let _ = request.respond(
+                tiny_http::Response::from_string("local clients only").with_status_code(403),
+            );
+            continue;
+        }
         if request.method() != &tiny_http::Method::Post {
             let _ = request
                 .respond(tiny_http::Response::from_string("POST required").with_status_code(405));

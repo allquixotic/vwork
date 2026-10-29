@@ -47,7 +47,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V26: Fetch ! git2 transport with redb-backed existing objects, temporary new packs only, atomic ref publication, same repo ID; preserve pinned workspaces/private commits; failure ! refs unchanged; explicit prune only. Tests `v26_fetch_updates_refs`, `v26_fetch_failure_prune_and_private_commits`, `v26_legacy_clone_requires_explicit_source_once`.
 
 - V27: Flexible Goose defaults ! Developer enabled, unrelated extensions preserved, all pure reads and general scripts available; hook ! detect direct clone/init/worktree-add, preserve quoted examples/help/read commands; one shared prompt ! retain indefinite workspace_export and recommend leased transient copies. Tests `v27_reads_and_general_tools_remain_available`, `v27_direct_repository_creation_is_redirected`, `v27_generated_configuration_and_single_prompt`.
-- V28: Shared MCP ! existing authenticated owner, same protocol/tool allowlist, request-local workspace binding, concurrent clients isolated; no bridge process required, no maintenance tools added. Test `v28_shared_mcp_preserves_bindings_and_owner`.
+- V28: Shared MCP ! existing authenticated loopback owner, matching Host, no browser Origin, same protocol/tool allowlist, request-local workspace binding, concurrent clients isolated; no bridge process required, no maintenance tools added. Test `v28_shared_mcp_preserves_bindings_and_owner`.
 
 # §T
 id|status|task|cites
@@ -113,3 +113,4 @@ B28|2026-10-26|Wrapper detector scanned argument data after the executed shell c
 
 B29|2026-10-26|Download verification compared Windows CRLF packaged prompt bytes directly with local LF source|Normalize line endings only for source-text comparisons; retain exact ZIP/executable cryptographic checks; no runtime change
 B30|2026-10-29|Goose spawns stdio bridge per conversation despite shared database owner; expensive Windows process creation repeats|V28; expose existing MCP handler through authenticated daemon API for reusable client transports
+B31|2026-10-29|New binding regression inspected workspace-info ID at wrong JSON depth; Windows/Mac CI caught Null vs expected ID|V28; assert workspace.id, preserve real concurrent-client test
