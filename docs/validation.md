@@ -328,3 +328,18 @@ Full Windows/macOS package fixtures and signed release evidence follow in CI.
   enable Developer, replace the old vwork hints/hook and start a new conversation.
   No Fastrock binary update is needed. S3 remains at the last explicitly requested
   0.3.1 upload; ship-to-aws was not invoked for this release.
+
+## Shared MCP transport, 2026-10-29
+
+Version 0.3.3, commit `2c86efa`: Windows and macOS CI
+[40895378344](https://github.com/allquixotic/vwork/actions/runs/40895378344) passed
+formatting, strict Clippy and all targets. The new daemon regression exercises
+concurrent workspace bindings, unchanged owner identity, authentication, and
+Origin/Host rejection. Global compaction remains unavailable through MCP.
+
+Signed Windows release [40896550504](https://github.com/allquixotic/vwork/actions/runs/40896550504)
+passed the same validation plus lifecycle smoke, publisher/timestamp verification
+and provenance attestation. Downloaded ZIP SHA-256:
+`81ad8e8df7b6423ff47c994c4cbb263307036d27b4cffd97fd42d1232eb6732d`.
+Verified attestation locally and Authenticode on `games`: valid Sean McNamara
+publisher, Microsoft RFC 3161 timestamp. Release LTO is off.

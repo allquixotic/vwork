@@ -71,7 +71,7 @@ T14|x|Incremental fetch into existing redb registrations; distinct MCP tool desc
 T15|x|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws upload|V10,V24,V25,V26,I.release
 
 T16|x|Flexible Goose host tools, narrow misuse hook, shared instructions and indefinite exports|V8,V17,V27,I.goose,I.rpc
-T17|~|Authenticated daemon MCP reuse for Fastrock, Windows/Mac CI and signed Windows release; LTO off|V8,V16,V28,I.rpc,I.release
+T17|x|Authenticated daemon MCP reuse for Fastrock, Windows/Mac CI and signed Windows release; LTO off|V8,V16,V28,I.rpc,I.release
 
 # §B
 id|date|cause|fix
