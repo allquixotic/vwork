@@ -47,6 +47,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V26: Fetch ! git2 transport with redb-backed existing objects, temporary new packs only, atomic ref publication, same repo ID; preserve pinned workspaces/private commits; failure ! refs unchanged; explicit prune only. Tests `v26_fetch_updates_refs`, `v26_fetch_failure_prune_and_private_commits`, `v26_legacy_clone_requires_explicit_source_once`.
 
 - V27: Flexible Goose defaults ! Developer enabled, unrelated extensions preserved, all pure reads and general scripts available; hook ! detect direct clone/init/worktree-add, preserve quoted examples/help/read commands; one shared prompt ! retain indefinite workspace_export and recommend leased transient copies. Tests `v27_reads_and_general_tools_remain_available`, `v27_direct_repository_creation_is_redirected`, `v27_generated_configuration_and_single_prompt`.
+- V28: Shared MCP ! existing authenticated owner, same protocol/tool allowlist, request-local workspace binding, concurrent clients isolated; no bridge process required, no maintenance tools added. Test `v28_shared_mcp_preserves_bindings_and_owner`.
 
 # §T
 id|status|task|cites
@@ -70,6 +71,7 @@ T14|x|Incremental fetch into existing redb registrations; distinct MCP tool desc
 T15|x|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws upload|V10,V24,V25,V26,I.release
 
 T16|x|Flexible Goose host tools, narrow misuse hook, shared instructions and indefinite exports|V8,V17,V27,I.goose,I.rpc
+T17|~|Authenticated daemon MCP reuse for Fastrock, Windows/Mac CI and signed Windows release; LTO off|V8,V16,V28,I.rpc,I.release
 
 # §B
 id|date|cause|fix
@@ -110,3 +112,4 @@ B27|2026-10-26|Strict generated config and blanket hook prevented host reads/scr
 B28|2026-10-26|Wrapper detector scanned argument data after the executed shell command and blocked a harmless echo; V27 regression reproduced on Windows|V27; inspect only the first executed command string, allow script/unknown/syntax-check forms; cancel initial release before publication
 
 B29|2026-10-26|Download verification compared Windows CRLF packaged prompt bytes directly with local LF source|Normalize line endings only for source-text comparisons; retain exact ZIP/executable cryptographic checks; no runtime change
+B30|2026-10-29|Goose spawns stdio bridge per conversation despite shared database owner; expensive Windows process creation repeats|V28; expose existing MCP handler through authenticated daemon API for reusable client transports

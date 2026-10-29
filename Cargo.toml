@@ -1,6 +1,6 @@
 [package]
 name = "vwork"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.90"
 description = "Compressed virtual workspaces and MCP tools for coding agents"
@@ -48,5 +48,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 tempfile = "3"
 
 [profile.release]
-lto = "thin"
+lto = "off"
 strip = true

@@ -183,6 +183,28 @@ pub fn serve(home: &Path) -> Result<()> {
                     stop.store(true, Ordering::SeqCst);
                     return Ok(json!({"stopping":true}));
                 }
+                if op == "mcp" {
+                    let arguments = &input["arguments"];
+                    let bound = match arguments.get("workspace") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(workspace)) => {
+                            crate::model::valid_id(workspace)?;
+                            Some(workspace.as_str())
+                        }
+                        _ => anyhow::bail!("workspace must be a string"),
+                    };
+                    let request = &arguments["request"];
+                    ensure!(request.is_object(), "MCP request must be an object");
+                    if request["method"] == "initialize"
+                        && let Some(workspace) = bound
+                    {
+                        engine.call("workspace_info", &json!({"workspace":workspace}))?;
+                    }
+                    return Ok(protocol::mcp_response(request, bound, |op, args| {
+                        engine.call(op, args)
+                    })
+                    .unwrap_or(Value::Null));
+                }
                 engine.call(op, &input["arguments"])
             })();
             let output = match value {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.3
+
+- Serve MCP requests through the existing authenticated daemon API, with a separate workspace binding per request. Compatible clients can reuse the daemon without spawning a stdio bridge for every conversation.
+- Share the existing MCP tool definitions, instructions and dispatch; raw shell and database maintenance remain outside the MCP tool surface.
+- Advertise `shared_mcp` capability in health responses. Existing stdio clients remain supported.
+- Disable LTO for this release.
+
 ## 0.3.2
 
 - Goose setup enables Developer and preserves other MCP extensions for host reads, edits, API queries and one-off scripts.

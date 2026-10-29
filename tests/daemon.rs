@@ -129,6 +129,95 @@ fn v24_online_compaction() -> Result<()> {
 }
 
 #[test]
+fn v28_shared_mcp_preserves_bindings_and_owner() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source_path = temp.path().join("source");
+    let source = git2::Repository::init(&source_path)?;
+    let blob = source.blob(b"base\n")?;
+    let tree = {
+        let mut tree = source.treebuilder(None)?;
+        tree.insert("README.md", blob, 0o100644)?;
+        tree.write()?
+    };
+    let signature = git2::Signature::now("Fixture", "fixture@example.invalid")?;
+    source.commit(
+        Some("HEAD"),
+        &signature,
+        &signature,
+        "base",
+        &source.find_tree(tree)?,
+        &[],
+    )?;
+    drop(source);
+    let home = temp.path().join("state");
+    let _cleanup = StopHome(home.clone());
+    assert!(mcp_exchange(&home, &[])?.status.success());
+    let identity = std::fs::read(home.join("connection.json"))?;
+    assert_eq!(
+        vwork::transport::connect(&home, "health", &json!({}))?["capabilities"]["shared_mcp"],
+        true
+    );
+    vwork::transport::connect(
+        &home,
+        "repo_register",
+        &json!({"repo":"repo","path":source_path}),
+    )?;
+    for workspace in ["one", "two"] {
+        vwork::transport::connect(
+            &home,
+            "workspace_create",
+            &json!({"repo":"repo","workspace":workspace}),
+        )?;
+    }
+    let mut clients = Vec::new();
+    for workspace in ["one", "two"] {
+        let home = home.clone();
+        clients.push(std::thread::spawn(move || -> Result<()> {
+            let call = |request| vwork::transport::connect(&home, "mcp", &json!({"workspace":workspace,"request":request}));
+            let init = call(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}))?;
+            assert_eq!(init["result"]["serverInfo"]["name"], "vwork");
+            let tools = call(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))?;
+            assert!(tools["result"]["tools"].as_array().unwrap().iter().all(|t| t["name"] != "vwork_database_compact"));
+            for _ in 0..5 {
+                let info = call(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"vwork_workspace_info","arguments":{}}}))?;
+                assert_eq!(info["result"]["isError"], false);
+                let content: Value = serde_json::from_str(info["result"]["content"][0]["text"].as_str().unwrap())?;
+                assert_eq!(content["id"], workspace);
+            }
+            let denied = call(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"vwork_database_compact","arguments":{}}}))?;
+            assert_eq!(denied["error"]["code"], -32602);
+            Ok(())
+        }));
+    }
+    for client in clients {
+        client.join().unwrap()?;
+    }
+    assert!(
+        vwork::transport::connect(
+            &home,
+            "mcp",
+            &json!({"workspace":"missing","request":{"id":1,"method":"initialize"}})
+        )
+        .is_err()
+    );
+    assert!(
+        vwork::transport::connect(
+            &home,
+            "mcp",
+            &json!({"workspace":4,"request":{"id":1,"method":"initialize"}})
+        )
+        .is_err()
+    );
+    let connection: Value = serde_json::from_slice(&identity)?;
+    let unauthorized = ureq::post(connection["url"].as_str().unwrap()).send_json(
+        json!({"operation":"mcp","arguments":{"request":{"id":1,"method":"tools/list"}}}),
+    );
+    assert!(matches!(unauthorized, Err(ureq::Error::StatusCode(401))));
+    assert_eq!(std::fs::read(home.join("connection.json"))?, identity);
+    Ok(())
+}
+
+#[test]
 fn v16_startup_bounds() -> Result<()> {
     use fs2::FileExt;
     use std::time::Instant;

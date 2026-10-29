@@ -613,7 +613,7 @@ impl Engine {
             "repo_fetch" => return self.fetch_repository(a),
             "health" => {
                 return Ok(
-                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":SCHEMA_VERSION,"compression_level":self.config.compression_level,"recovery":self.recovery}),
+                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":SCHEMA_VERSION,"compression_level":self.config.compression_level,"recovery":self.recovery,"capabilities":{"shared_mcp":true}}),
                 );
             }
             "repo_register" | "repo_clone" => {

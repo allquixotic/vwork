@@ -4,6 +4,18 @@ No patch to aaif-goose/goose is needed. vwork is a stdio MCP extension and the
 optional policy layer uses Goose's existing plugin hooks. Its executable supplies
 the hook too; there are no Python or JavaScript bridge scripts.
 
+Compatible Fastrock versions can use vwork 0.3.3's authenticated daemon MCP API
+instead of spawning a stdio bridge per conversation. Configuration stays the same:
+Fastrock supplies Goose with a local HTTP transport carrying the same vwork tools,
+instructions and workspace binding. Health advertises `capabilities.shared_mcp`.
+The daemon accepts operation `mcp` with arguments `{workspace, request}`, where
+`request` is an MCP JSON-RPC message and `workspace` is an optional default binding.
+The response's `result` is the MCP reply, or null for a notification. The existing
+connection file, bearer authentication, body limit and worker limit still apply.
+Bindings belong to each request, so simultaneous conversations cannot change each
+other's defaults. Database maintenance remains outside the MCP tool allowlist.
+Ordinary Goose CLI clients continue using the supported stdio bridge.
+
 ## Generate configuration
 
 After registering a repo, creating a workspace and starting the daemon:
