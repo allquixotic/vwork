@@ -50,6 +50,8 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V28: Shared MCP ! existing authenticated loopback owner, matching Host, no browser Origin, same protocol/tool allowlist, request-local workspace binding, concurrent clients isolated; no bridge process required, no maintenance tools added. Test `v28_shared_mcp_preserves_bindings_and_owner`.
 - V29: Startup/snapshot lock handoff ! explicit unlock before next owner; duplicated/inherited descriptor ⊥ prolong lock after guard release, including error cleanup. Tests `v29_handoff_releases_lock_while_duplicate_survives`, `v29_close_alone_retains_inherited_lock`; retain exclusive ownership checks.
 
+- V30: Clean open ! redb header/allocator validation without whole-file snapshot or integrity scrub; retain prior recovery evidence and avoid unchanged schema/table commits. Repair required ! snapshot before repair, full integrity check before serving; empty/corrupt files ! preserve fail-closed V25. Tests `v30_clean_open_preserves_recovery_evidence_without_snapshot`, V25 crash/corruption regressions and large-store I/O acceptance.
+
 # §T
 id|status|task|cites
 ---|---|---|---
@@ -74,6 +76,7 @@ T15|x|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws 
 T16|x|Flexible Goose host tools, narrow misuse hook, shared instructions and indefinite exports|V8,V17,V27,I.goose,I.rpc
 T17|x|Authenticated daemon MCP reuse for Fastrock, Windows/Mac CI and signed Windows release; LTO off|V8,V16,V28,I.rpc,I.release
 T18|x|Fix snapshot/startup lock handoff, await durable cleanup completion, repeat CI race regressions, signed Windows 0.3.4|V21,V22,V25,V29,I.storage,I.release
+T19|~|Fast clean database startup with conditional recovery snapshot, unchanged-schema read paths and large-store validation|V25,V29,V30,I.storage
 
 # §B
 id|date|cause|fix
@@ -118,3 +121,7 @@ B30|2026-10-29|Goose spawns stdio bridge per conversation despite shared databas
 B31|2026-10-29|New binding regression inspected workspace-info ID at wrong JSON depth; Windows/Mac CI caught Null vs expected ID|V28; assert workspace.id, preserve real concurrent-client test
 B32|2026-10-29|Snapshot closed flock handle without explicit unlock; concurrently forked child can retain shared open description and block immediate redb open on macOS|V29; explicit unlock at snapshot handoff, RAII release for snapshot/startup errors; deterministic duplicate-descriptor regression and concurrent reopen stress
 B33|2026-10-29|Periodic cleanup test assumed removed tree implied durable lease deletion; Windows sampled intermediate deleting record|V22; bounded wait for empty active list and matching released history; assert full lease directory removed
+
+B34|2026-11-03|Every clean open copied/fsynced entire redb then ran full integrity scan; embedded transient owners multiplied gigabytes of IO|Abort-on-repair probe first, full snapshot/check only when repair required; preserve earlier evidence and fail-closed corruption handling; V25,V30
+
+B35|2026-11-03|Cross-compiled package tests on games lacked Cargo and retained the Mac source path; 46/48 workspace tests and all storage/recovery/daemon/policy tests passed|Require native Windows/macOS CI package coverage; do not weaken fixture assertions; T19

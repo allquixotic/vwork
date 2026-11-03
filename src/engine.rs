@@ -61,20 +61,29 @@ impl Engine {
         std::fs::create_dir_all(home.as_ref())?;
         let home = home.as_ref().canonicalize()?;
         let (db, recovery) = crate::storage::open(&home.join("workspaces.redb"))?;
-        let txn = db.begin_write()?;
-        {
-            let mut table = txn.open_table(RECORDS)?;
-            if let Some(v) = table.get("schema")? {
-                ensure!(
-                    [b"1".as_slice(), b"2".as_slice()].contains(&v.value()),
-                    "unsupported database schema"
-                );
+        let initialize = {
+            let txn = db.begin_read()?;
+            match txn.open_table(RECORDS) {
+                Ok(table) => {
+                    if let Some(v) = table.get("schema")? {
+                        ensure!(
+                            [b"1".as_slice(), b"2".as_slice()].contains(&v.value()),
+                            "unsupported database schema"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => true,
+                Err(error) => return Err(error.into()),
             }
-            if table.get("schema")?.is_none() {
-                table.insert("schema", b"1".as_slice())?;
-            }
+        };
+        if initialize {
+            let txn = db.begin_write()?;
+            txn.open_table(RECORDS)?.insert("schema", b"1".as_slice())?;
+            txn.commit()?;
         }
-        txn.commit()?;
         git_store::initialize(&db)?;
         let engine = Self {
             db: Arc::new(db),
@@ -87,7 +96,6 @@ impl Engine {
             transfer_lock: Mutex::new(()),
             base_cache: Mutex::new(HashMap::new()),
         };
-        engine.cleanup_transfers()?;
         engine.migrate_repositories()?;
         engine.migrate_legacy_copies()?;
         engine.reap_temporary()?;
@@ -419,9 +427,11 @@ impl Engine {
                 eprintln!("Repository {} migration complete", repo.id);
             }
         }
-        let tx = self.db.begin_write()?;
-        tx.open_table(RECORDS)?.insert("schema", b"2".as_slice())?;
-        tx.commit()?;
+        if self.get::<u32>("schema")? != 2 {
+            let tx = self.db.begin_write()?;
+            tx.open_table(RECORDS)?.insert("schema", b"2".as_slice())?;
+            tx.commit()?;
+        }
         Ok(())
     }
 

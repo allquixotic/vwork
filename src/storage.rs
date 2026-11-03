@@ -74,49 +74,45 @@ pub fn open(path: &Path) -> Result<(Database, Value)> {
         path.display()
     );
 
-    let backup = snapshot(path)?;
-    // The startup guard serializes vwork openers across the snapshot/open handoff.
-    // Probe while preventing redb from repairing anything before a snapshot exists.
-    // Successful open holds redb's exclusive ownership throughout the check.
+    // A clean redb open validates its headers and allocator without scanning
+    // payloads. Abort before any repair; only interrupted stores need a full
+    // pre-repair copy and integrity scan. Copying every healthy store here made
+    // each GUI startup perform gigabytes of avoidable reads, writes and fsyncs.
     let mut probe = Database::builder();
     probe.set_repair_callback(|session| session.abort());
-    let (mut db, backup, dirty) = match probe.open(path) {
-        Ok(db) => (db, backup, false),
+    let (mut db, backup) = match probe.open(path) {
+        Ok(db) => {
+            // Retain earlier recovery evidence. A normal open must neither
+            // replace it nor claim to have performed a full integrity scan.
+            return Ok((db, json!({"state":"clean","integrity_checked":false})));
+        }
         Err(DatabaseError::RepairAborted) => {
+            // The startup guard serializes the snapshot/open handoff, and the
+            // snapshot itself requires exclusive ownership of the data file.
+            let backup = snapshot(path)?;
             eprintln!("Database was not cleanly closed; recovering from committed redb state");
             let mut builder = Database::builder();
             builder.set_repair_callback(|session| eprintln!("Database recovery: {:.0}%", session.progress() * 100.0));
             let db = builder.open(path).with_context(|| format!(
                 "database repair failed; original retained at {}, recovery snapshot at {}; restore a verified backup",
                 path.display(), backup.display()))?;
-            (db, backup, true)
+            (db, backup)
         }
         Err(error) => return Err(error).with_context(|| format!(
             "database could not be opened; preserved {}; no replacement database was created; restore a verified backup",
             path.display())),
     };
     eprintln!("Checking database integrity before serving requests...");
-    let clean = db.check_integrity().with_context(|| format!(
+    db.check_integrity().with_context(|| format!(
         "database integrity check failed; service not started; original retained at {}, pre-check snapshot at {}; restore a verified backup",
         path.display(), backup.display()))?;
-    let recovered = dirty || !clean;
     let previous = path.with_extension("redb.recovery.bak");
-    let backup = if recovered {
-        // Replace older evidence only after successful verification. Failed
-        // startup retains the old backup plus this attempt's partial snapshot.
-        std::fs::rename(&backup, &previous).context("publish verified recovery snapshot")?;
-        #[cfg(unix)]
-        std::fs::File::open(path.parent().context("database has no parent")?)?.sync_all()?;
-        previous
-    } else {
-        std::fs::remove_file(&backup).context("remove verified startup snapshot")?;
-        if previous.exists() {
-            std::fs::remove_file(&previous)?;
-        }
-        backup
-    };
-    let report = json!({"state":if recovered {"recovered"} else {"clean"},
-        "integrity_checked":true,"backup":if recovered {Some(backup)} else {None}});
+    // Replace older evidence only after successful verification. Failed startup
+    // retains the old backup plus this attempt's partial snapshot.
+    std::fs::rename(&backup, &previous).context("publish verified recovery snapshot")?;
+    #[cfg(unix)]
+    std::fs::File::open(path.parent().context("database has no parent")?)?.sync_all()?;
+    let report = json!({"state":"recovered", "integrity_checked":true,"backup":previous});
     eprintln!("Database integrity verified ({})", report["state"]);
     Ok((db, report))
 }
@@ -124,6 +120,39 @@ pub fn open(path: &Path) -> Result<(Database, Value)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v30_clean_open_preserves_recovery_evidence_without_snapshot() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("workspaces.redb");
+        let (db, _) = open(&path)?;
+        let table = redb::TableDefinition::<&str, &str>::new("fixture");
+        let tx = db.begin_write()?;
+        tx.open_table(table)?.insert("key", "committed content")?;
+        tx.commit()?;
+        drop(db);
+        let previous = path.with_extension("redb.recovery.bak");
+        let partial = path.with_extension("redb.recovery.partial");
+        std::fs::write(&previous, b"earlier recovery evidence")?;
+        // A directory makes an accidental new full snapshot fail, even on fast
+        // CI disks. Clean startup has no reason to touch either evidence path.
+        std::fs::create_dir(&partial)?;
+        let (db, report) = open(&path)?;
+        assert_eq!(report["state"], "clean");
+        assert_eq!(report["integrity_checked"], false);
+        assert_eq!(std::fs::read(&previous)?, b"earlier recovery evidence");
+        assert!(partial.is_dir());
+        use redb::ReadableDatabase;
+        assert_eq!(
+            db.begin_read()?
+                .open_table(table)?
+                .get("key")?
+                .unwrap()
+                .value(),
+            "committed content"
+        );
+        Ok(())
+    }
 
     #[test]
     fn v29_handoff_releases_lock_while_duplicate_survives() -> Result<()> {

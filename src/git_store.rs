@@ -11,6 +11,20 @@ pub const OBJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_obje
 pub const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_members_v1");
 
 pub fn initialize(db: &Database) -> Result<()> {
+    let mut missing = false;
+    {
+        let tx = db.begin_read()?;
+        for table in [OBJECTS, MEMBERS] {
+            match tx.open_table(table) {
+                Ok(_) => {}
+                Err(redb::TableError::TableDoesNotExist(_)) => missing = true,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    if !missing {
+        return Ok(());
+    }
     let tx = db.begin_write()?;
     tx.open_table(OBJECTS)?;
     tx.open_table(MEMBERS)?;
