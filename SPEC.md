@@ -76,7 +76,7 @@ T15|x|Verify Windows/macOS, sign/release 0.3.1 through CI, explicit ship-to-aws 
 T16|x|Flexible Goose host tools, narrow misuse hook, shared instructions and indefinite exports|V8,V17,V27,I.goose,I.rpc
 T17|x|Authenticated daemon MCP reuse for Fastrock, Windows/Mac CI and signed Windows release; LTO off|V8,V16,V28,I.rpc,I.release
 T18|x|Fix snapshot/startup lock handoff, await durable cleanup completion, repeat CI race regressions, signed Windows 0.3.4|V21,V22,V25,V29,I.storage,I.release
-T19|~|Fast clean database startup with conditional recovery snapshot, unchanged-schema read paths and large-store validation|V25,V29,V30,I.storage
+T19|x|Fast clean database startup with conditional recovery snapshot, unchanged-schema read paths and large-store validation; Windows/macOS CI 41652857482 passed including packaging and repeated lifecycle races; Fastrock 2.50GiB/24-repository/96-workspace guarded fixture passed on games with one clean open, no snapshot and 2.66MB process reads|V25,V29,V30,I.storage
 
 # §B
 id|date|cause|fix
