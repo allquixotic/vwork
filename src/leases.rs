@@ -271,7 +271,12 @@ impl Engine {
         {
             let mut t = tx.open_table(RECORDS)?;
             for (hash, bytes) in blobs {
-                t.insert(format!("b/{hash}").as_str(), bytes.as_slice())?;
+                crate::git_store::write_overlay(
+                    &tx,
+                    &recovery.repo,
+                    git2::Oid::from_str(&hash)?,
+                    &bytes,
+                )?;
             }
             t.insert(
                 format!("v/{}", revision.id).as_str(),
@@ -402,7 +407,7 @@ impl Engine {
                     std::fs::rename(from, &to)?;
                 }
             }
-            // Remove old alternates before rebuilding the Git view from redb;
+            // Remove old alternates before rebuilding the Git view from Fjall;
             // physical source edits remain untouched for recovery.
             let alternates = root.join("git/objects/info/alternates");
             safe_ancestors(&alternates)?;

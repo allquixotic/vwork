@@ -1,5 +1,4 @@
 use anyhow::Result;
-use redb::ReadableDatabase;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command, sync::Arc};
 use tempfile::TempDir;
@@ -120,7 +119,9 @@ fn v25_crash_writer_child() -> Result<()> {
     let engine = Engine::open(home, Config::default())?;
     let tx = engine.db.begin_write()?;
     {
-        let mut table = tx.open_table(redb::TableDefinition::<&str, &str>::new("crash_fixture"))?;
+        let mut table = tx.open_table(vwork::kv::TableDefinition::<&str, &str>::new(
+            "crash_fixture",
+        ))?;
         table.insert("committed", "must survive sudden termination")?;
     }
     tx.commit()?;
@@ -141,11 +142,12 @@ fn v25_crash_recovery_and_corruption_preservation() -> Result<()> {
         String::from_utf8_lossy(&child.stderr)
     );
     let engine = Engine::open(temp.path(), Config::default())?;
-    assert_eq!(engine.recovery["state"], "recovered");
-    assert!(temp.path().join("workspaces.redb.recovery.bak").is_file());
+    assert_eq!(engine.recovery["state"], "clean");
     {
         let tx = engine.db.begin_read()?;
-        let table = tx.open_table(redb::TableDefinition::<&str, &str>::new("crash_fixture"))?;
+        let table = tx.open_table(vwork::kv::TableDefinition::<&str, &str>::new(
+            "crash_fixture",
+        ))?;
         assert_eq!(
             table.get("committed")?.unwrap().value(),
             "must survive sudden termination"
@@ -155,9 +157,9 @@ fn v25_crash_recovery_and_corruption_preservation() -> Result<()> {
     let reopened = Engine::open(temp.path(), Config::default())?;
     assert_eq!(reopened.recovery["state"], "clean");
     drop(reopened);
-    let path = temp.path().join("workspaces.redb");
+    let path = temp.path().join("workspaces.fjall/version");
     let mut bytes = std::fs::read(&path)?;
-    bytes[..9].fill(0xFE);
+    bytes.fill(0xFE);
     std::fs::write(&path, &bytes)?;
     let old_backup = temp.path().join("workspaces.redb.recovery.bak");
     std::fs::write(&old_backup, b"preserve earlier recovery evidence")?;
@@ -277,7 +279,7 @@ fn v26_legacy_clone_requires_explicit_source_once() -> Result<()> {
     repo.fetch_source = None;
     assert!(repo.git_dir.as_os_str().is_empty());
     let tx = f.engine.db.begin_write()?;
-    tx.open_table(redb::TableDefinition::<&str, &[u8]>::new("records_v1"))?
+    tx.open_table(vwork::kv::TableDefinition::<&str, &[u8]>::new("records_v1"))?
         .insert("r/oldclone", serde_json::to_vec(&repo)?.as_slice())?;
     tx.commit()?;
     let error = f
@@ -326,7 +328,14 @@ fn binary_and_compression() -> Result<()> {
     f.write("one", "duplicate.txt", &content);
     let stats = f.engine.call("stats", &json!({}))?;
     assert_eq!(stats["blobs"], 1);
-    assert!(stats["compressed_blob_bytes"].as_u64().unwrap() < 1000);
+    assert_eq!(
+        f.engine.call(
+            "files_read",
+            &json!({"workspace":"one","path":"large.txt","line_count":10000})
+        )?["content"],
+        content.trim_end()
+    );
+    assert_eq!(stats["compression"], "lz4");
     let mut c = Config {
         compression_level: 23,
         ..Config::default()
@@ -883,7 +892,10 @@ fn concurrent_edits() -> Result<()> {
 fn package_contents() -> Result<()> {
     let tmp = tempfile::tempdir()?;
     let zip = tmp.path().join("source.zip");
-    vwork::integration::package(std::path::Path::new(env!("CARGO_MANIFEST_DIR")), None, &zip)?;
+    let source = std::env::var_os("VWORK_TEST_SOURCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    vwork::integration::package(&source, None, &zip)?;
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip)?)?;
     assert!(archive.by_name("vwork/Cargo.toml").is_ok());
     assert!(archive.by_name("vwork/src/engine.rs").is_ok());
@@ -898,12 +910,7 @@ fn package_contents() -> Result<()> {
     let binary = tmp.path().join("vwork");
     std::fs::write(&binary, b"native Mac")?;
     assert!(
-        vwork::integration::package(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
-            Some(&binary),
-            &tmp.path().join("bad.zip")
-        )
-        .is_err()
+        vwork::integration::package(&source, Some(&binary), &tmp.path().join("bad.zip")).is_err()
     );
     Ok(())
 }
@@ -1567,8 +1574,8 @@ fn v23_uv_cdk_plans() -> Result<()> {
 }
 
 #[test]
-fn v21_legacy_migration() -> Result<()> {
-    use redb::{Database, ReadableTable, TableDefinition};
+fn v21_legacy_repository_metadata_upgrade() -> Result<()> {
+    use vwork::kv::{Database, TableDefinition};
     let f = Fixture::new();
     f.write("one", "README.md", "legacy edit");
     let original_index = std::fs::read(f.root.join(".git/index"))?;
@@ -1579,7 +1586,7 @@ fn v21_legacy_migration() -> Result<()> {
         _temp,
     } = f;
     drop(engine);
-    let db = Database::create(home.join("workspaces.redb"))?;
+    let db = Database::open(&home.join("workspaces.fjall"))?;
     let tx = db.begin_write()?;
     {
         let mut table = tx.open_table(TableDefinition::<&str, &[u8]>::new("records_v1"))?;
@@ -1590,8 +1597,6 @@ fn v21_legacy_migration() -> Result<()> {
         table.insert("r/repo", serde_json::to_vec(&repo)?.as_slice())?;
         table.insert("schema", b"1".as_slice())?;
     }
-    tx.delete_table(vwork::git_store::OBJECTS)?;
-    tx.delete_table(vwork::git_store::MEMBERS)?;
     tx.commit()?;
     drop(db);
     let reopened = Engine::open(&home, Config::default())?;
@@ -1763,7 +1768,7 @@ fn v21_clone_transport() -> Result<()> {
     let result = f
         .engine
         .call("repo_clone", &json!({"repo":"transport","source":source}))?;
-    assert_eq!(result["storage"], "redb");
+    assert_eq!(result["storage"], "fjall");
     assert_eq!(
         f.engine.call("storage_info", &json!({}))?["git_objects"],
         before["git_objects"]
@@ -1892,5 +1897,90 @@ fn v21_shared_objects_keep_repository_membership() -> Result<()> {
         ),
         std::str::from_utf8(bytes)?.trim()
     );
+    Ok(())
+}
+
+#[test]
+fn v33_overlay_gc_preserves_shared_bases_and_reclaims_dead_edits() -> Result<()> {
+    use vwork::{git_store, kv::TableDefinition};
+    let f = Fixture::new();
+    let base = "unmodified shared content\n".repeat(3000);
+    let mut edited = base.clone();
+    edited.replace_range(200..210, "new change");
+    let base_id = git2::Oid::hash_object(git2::ObjectType::Blob, base.as_bytes())?;
+    git_store::write(
+        &f.engine.db,
+        "removed-repo",
+        base_id,
+        git2::ObjectType::Blob,
+        base.as_bytes(),
+        0,
+    )?;
+    f.write("one", "large.txt", &edited);
+    let edited_id = git2::Oid::hash_object(git2::ObjectType::Blob, edited.as_bytes())?;
+    let tx = f.engine.db.begin_read()?;
+    assert_eq!(
+        git_store::delta_base(
+            tx.open_table(git_store::OBJECTS)?
+                .get(edited_id.to_string().as_str())?
+                .unwrap()
+                .value()
+        )?,
+        Some(base_id)
+    );
+    drop(tx);
+    f.engine.call("gc", &json!({}))?;
+    assert_eq!(
+        f.engine.call(
+            "files_read",
+            &json!({"workspace":"one","path":"large.txt","line_count":10000})
+        )?["content"],
+        edited.trim_end()
+    );
+    assert_eq!(git_store::read(&f.engine.db, base_id)?.1, base.as_bytes());
+    f.engine.call(
+        "files_delete",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"path":"large.txt"}),
+    )?;
+    f.engine.call(
+        "workspace_squash",
+        &json!({"workspace":"one","expected_revision":f.head("one")}),
+    )?;
+    f.engine.call("gc", &json!({}))?;
+    assert!(git_store::read(&f.engine.db, edited_id).is_err());
+    assert!(git_store::read(&f.engine.db, base_id).is_err());
+    let tx = f.engine.db.begin_read()?;
+    assert!(
+        tx.open_table(TableDefinition::<&str, &[u8]>::new(
+            "git_delta_candidates_v1"
+        ))?
+        .is_empty()?
+    );
+    Ok(())
+}
+
+#[test]
+fn v33_first_import_batch_uses_git_deltas() -> Result<()> {
+    let f = Fixture::new();
+    for i in 0..12 {
+        std::fs::write(
+            f.root.join(format!("similar-{i}.txt")),
+            format!("{i:03}{}", "unchanged source line\n".repeat(500)),
+        )?;
+    }
+    git(&f.root, &["add", "."]);
+    git(&f.root, &["commit", "-m", "similar blobs"]);
+    f.engine
+        .call("repo_register", &json!({"repo":"similar","path":f.root}))?;
+    let tx = f.engine.db.begin_read()?;
+    let table = tx.open_table(vwork::git_store::OBJECTS)?;
+    let mut deltas = 0;
+    for row in table.iter()? {
+        let (_, record) = row?;
+        if vwork::git_store::delta_base(record.value())?.is_some() {
+            deltas += 1;
+        }
+    }
+    assert!(deltas >= 8, "first batch must use Git deltas: {deltas}");
     Ok(())
 }

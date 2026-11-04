@@ -129,7 +129,7 @@ older guidance that Developer is required does not describe this version.
 
 ### Global instructions and upgrades from the strict setup
 
-vwork's virtual file tools access redb; Developer supplies host access. Skill
+vwork's virtual file tools access Fjall; Developer supplies host access. Skill
 discovery from `~/.claude/skills` is separate from loading global Claude rules,
 and does not implement Claude-specific hooks or subagents.
 

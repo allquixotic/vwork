@@ -143,12 +143,8 @@ fn run() -> Result<()> {
                 .context("Git unavailable")?;
             ensure!(git.status.success(), "Git unavailable");
             println!("{}", String::from_utf8_lossy(&git.stdout).trim());
-            let c = transport::load_config(&home)?;
-            println!(
-                "home={} compression_level={}",
-                home.display(),
-                c.compression_level
-            );
+            transport::load_config(&home)?;
+            println!("home={} engine=fjall compression=lz4", home.display());
             println!(
                 "daemon={}",
                 transport::connect(&home, "health", &json!({}))?
@@ -165,7 +161,8 @@ fn run() -> Result<()> {
                 .open(home.join("daemon.lock"))?;
             if f.try_lock_exclusive().is_ok() {
                 anyhow::ensure!(
-                    home.join("workspaces.redb").exists(),
+                    home.join(vwork::migration::DIRECTORY).exists()
+                        || home.join("workspaces.redb").exists(),
                     "no database to compact"
                 );
                 let service =

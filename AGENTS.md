@@ -4,8 +4,8 @@ This repository implements virtual workspaces. It is not itself a virtual checko
 The consumer prompt is `examples/AGENTS.md`.
 
 - Preserve the storage and isolation invariants in SPEC.md.
-- All shipped programs are native Rust. Use git2/libgit2 for Git; store all persistent Git objects, refs and source in redb.
-- Default zstd level is 3. Never silently copy complete source into each workspace.
+- All shipped programs are native Rust. Use git2/libgit2 for Git; store persistent Git objects, refs and source in Fjall (2026-11-04 authorization).
+- Configure Fjall LZ4; no application entropy compression except decoding legacy redb during migration. Support Git deltas; never copy complete source into each workspace.
 - Default repository changes to virtual tools. Host reads, file edits, scripts and other MCPs remain available. Tool copies use bounded leases; intentional workspace_export copies remain indefinite. Keep consumer instructions simple and shared across all generated surfaces.
 - Never point managed materialization at a registered source checkout.
 - Keep build execution serialized per repository and revision-pinned.

@@ -1,11 +1,11 @@
-//! Incremental libgit2 fetch: existing objects remain in redb throughout transfer.
+//! Incremental libgit2 fetch: existing objects remain in Fjall throughout transfer.
 use crate::{
     engine::{Engine, RECORDS},
     git, git_store,
     model::{Repository, id, now, valid_id},
 };
 use anyhow::{Context, Result, ensure};
-use redb::ReadableTable;
+
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -163,7 +163,7 @@ impl Engine {
             }
             transaction.commit()?;
             Ok(
-                json!({"repo":repo_id,"head":updated.refs.get("HEAD"),"received_objects":received_objects,"received_bytes":received_bytes,"storage":"redb","workspaces_changed":false,"note":"Existing workspaces stay pinned; create a workspace from the fetched reference to use the updated source"}),
+                json!({"repo":repo_id,"head":updated.refs.get("HEAD"),"received_objects":received_objects,"received_bytes":received_bytes,"storage":"Fjall","workspaces_changed":false,"note":"Existing workspaces stay pinned; create a workspace from the fetched reference to use the updated source"}),
             )
         })();
         let cleanup = self.remove_transfer(&transfer);

@@ -1,3 +1,4 @@
+use crate::kv::{Database, TableDefinition};
 use crate::{
     git, git_store,
     model::*,
@@ -5,7 +6,6 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
-use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -69,7 +69,7 @@ impl Engine {
         config.validate()?;
         std::fs::create_dir_all(home.as_ref())?;
         let home = home.as_ref().canonicalize()?;
-        let (db, recovery) = crate::storage::open(&home.join("workspaces.redb"))?;
+        let (db, recovery) = crate::storage::open(&home)?;
         let initialize = {
             let txn = db.begin_read()?;
             match txn.open_table(RECORDS) {
@@ -84,7 +84,7 @@ impl Engine {
                         true
                     }
                 }
-                Err(redb::TableError::TableDoesNotExist(_)) => true,
+                Err(crate::kv::TableError::TableDoesNotExist(_)) => true,
                 Err(error) => return Err(error.into()),
             }
         };
@@ -140,7 +140,13 @@ impl Engine {
     }
     pub fn repo(&self, id: &str) -> Result<Repository> {
         valid_id(id)?;
-        self.get(&key("r", id))
+        let mut repo: Repository = self.get(&key("r", id))?;
+        let prefix = format!("ref/{id}/");
+        for (key, value) in self.scan(&prefix)? {
+            repo.refs
+                .insert(key[prefix.len()..].into(), serde_json::from_slice(&value)?);
+        }
+        Ok(repo)
     }
     pub fn workspace(&self, id: &str) -> Result<Workspace> {
         valid_id(id)?;
@@ -256,11 +262,7 @@ impl Engine {
         let stored = table
             .get(key("b", &e.oid).as_str())?
             .context("missing blob")?;
-        let decoder = zstd::stream::read::Decoder::new(stored.value())?;
-        let mut bytes = Vec::new();
-        decoder
-            .take(self.config.max_file_bytes as u64 + 1)
-            .read_to_end(&mut bytes)?;
+        let bytes = stored.value().to_vec();
         ensure!(
             bytes.len() == e.size as usize && bytes.len() <= self.config.max_file_bytes,
             "blob size mismatch"
@@ -318,7 +320,7 @@ impl Engine {
                 current.head
             );
             for (hash, bytes) in blobs {
-                table.insert(key("b", &hash).as_str(), bytes.as_slice())?;
+                git_store::write_overlay(&txn, &ws.repo, git2::Oid::from_str(&hash)?, &bytes)?;
             }
             table.insert(
                 key("v", &next.id).as_str(),
@@ -346,17 +348,15 @@ impl Engine {
             ["100644", "100755", "120000"].contains(&mode),
             "invalid file mode"
         );
-        let hash = blake3::hash(&content).to_hex().to_string();
-        let compressed =
-            zstd::stream::encode_all(content.as_slice(), self.config.compression_level)?;
+        let hash = git2::Oid::hash_object(git2::ObjectType::Blob, &content)?.to_string();
         Ok((
             Entry {
-                source: "blob".into(),
+                source: "git".into(),
                 oid: hash,
                 mode: mode.into(),
                 size: content.len() as u64,
             },
-            compressed,
+            content,
         ))
     }
     fn content_arg(a: &Value) -> Result<Vec<u8>> {
@@ -415,7 +415,7 @@ impl Engine {
             let mut repo: Repository = serde_json::from_slice(&bytes)?;
             if !repo.stored {
                 eprintln!(
-                    "Migrating Git objects for repository {} into redb...",
+                    "Migrating Git objects for repository {} into Fjall...",
                     repo.id
                 );
                 let source = git2::Repository::open(&repo.git_dir).with_context(|| {
@@ -526,7 +526,7 @@ impl Engine {
             repo.fetch_source = Some(source.clone());
             self.publish_repository(&repo)?;
             return Ok(
-                json!({"repo":repo.id,"stored":true,"storage":"redb","default_reference":"HEAD"}),
+                json!({"repo":repo.id,"stored":true,"storage":"fjall","default_reference":"HEAD"}),
             );
         }
         let _transfer = self
@@ -603,7 +603,7 @@ impl Engine {
                 self.config.task_timeout_seconds,
             )?;
             self.publish_repository(&repo)?;
-            Ok(json!({"repo":repo.id,"stored":true,"storage":"redb","default_reference":"HEAD"}))
+            Ok(json!({"repo":repo.id,"stored":true,"storage":"fjall","default_reference":"HEAD"}))
         })();
         let cleanup = self.remove_transfer(&transfer);
         match (result, cleanup) {
@@ -631,7 +631,7 @@ impl Engine {
             "repo_fetch" => return self.fetch_repository(a),
             "health" => {
                 return Ok(
-                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":SCHEMA_VERSION,"compression_level":self.config.compression_level,"recovery":self.recovery,"capabilities":{"shared_mcp":true}}),
+                    json!({"version":env!("CARGO_PKG_VERSION"),"schema":SCHEMA_VERSION,"compression":"lz4","recovery":self.recovery,"capabilities":{"shared_mcp":true}}),
                 );
             }
             "repo_register" | "repo_clone" => {
@@ -1352,7 +1352,7 @@ impl Engine {
             string(a, "expected_revision")? == ws.head,
             "revision conflict"
         );
-        let mut repo = self.repo(&ws.repo)?;
+        let repo = self.repo(&ws.repo)?;
         let repository = git::open(&self.db, &repo, self.config.compression_level)?;
         let mut converted = tree.clone();
         let mut reader = None;
@@ -1366,6 +1366,14 @@ impl Engine {
             }
             converted.insert(p.clone(), entry);
         }
+        git_store::retain_objects(
+            &self.db,
+            &ws.repo,
+            converted
+                .values()
+                .filter(|e| e.mode != "160000")
+                .map(|e| e.oid.clone()),
+        )?;
         let root = git::write_tree(&repository, &converted)?;
         let message = string(a, "message")?;
         ensure!(!message.trim().is_empty(), "empty commit message");
@@ -1381,26 +1389,13 @@ impl Engine {
             )?
             .to_string();
         let reference = format!("refs/vwork/commits/{}/{}", ws.id, ws.head);
-        let transaction = self.db.begin_write()?;
-        {
-            let mut table = transaction.open_table(RECORDS)?;
-            let key = key("r", &repo.id);
-            repo = serde_json::from_slice(
-                table
-                    .get(key.as_str())?
-                    .context("repository missing")?
-                    .value(),
-            )?;
-            repo.refs.insert(reference.clone(), oid.clone());
-            table.insert(key.as_str(), serde_json::to_vec(&repo)?.as_slice())?;
-        }
-        transaction.commit()?;
+        self.put(&format!("ref/{}/{reference}", ws.repo), &oid)?;
         self.put(
             &format!("export/{}/{}", ws.repo, ws.head),
             &json!({"commit":oid,"reference":reference,"revision":ws.head}),
         )?;
         Ok(
-            json!({"commit":oid,"reference":reference,"revision":ws.head,"note":"commit stored in redb; original repository untouched; use a temporary copy for native Git access"}),
+            json!({"commit":oid,"reference":reference,"revision":ws.head,"note":"commit stored in Fjall; original repository untouched; use a temporary copy for native Git access"}),
         )
     }
 
@@ -1794,7 +1789,7 @@ impl Engine {
                 serde_json::to_vec(&result)?.as_slice(),
             )?;
             let mut runs = Vec::new();
-            for item in table.range("run/"..)? {
+            for item in table.range("run/".."run0")? {
                 let (key, value) = item?;
                 if !key.value().starts_with("run/") {
                     break;
@@ -1853,23 +1848,41 @@ impl Engine {
                 _ => {}
             }
         }
+        let overlays = txn.open_table(git_store::OVERLAYS)?;
+        let mut overlay_ids = BTreeSet::new();
+        for row in overlays.iter()? {
+            let (key, _) = row?;
+            overlay_ids.insert(
+                key.value()
+                    .rsplit('/')
+                    .next()
+                    .context("invalid overlay membership")?
+                    .to_owned(),
+            );
+        }
         let git_objects = txn.open_table(git_store::OBJECTS)?;
+        for oid in overlay_ids {
+            if let Some(record) = git_objects.get(oid.as_str())? {
+                blobs += 1;
+                blob_bytes += record.value().len() as u64;
+            }
+        }
         let mut git_bytes = 0u64;
         for item in git_objects.iter()? {
             git_bytes += item?.1.value().len() as u64;
         }
         Ok(json!({
-            "git_objects":git_objects.len()?, "compressed_git_bytes":git_bytes,
+            "git_objects":git_objects.len()?, "logical_git_bytes":git_bytes, "compressed_git_bytes":git_bytes,
             "scope":"daemon", "repositories":repositories, "workspaces":workspaces,
-            "revisions":revisions, "blobs":blobs, "compressed_blob_bytes":blob_bytes,
+            "revisions":revisions, "blobs":blobs, "logical_blob_bytes":blob_bytes, "compressed_blob_bytes":blob_bytes,
             "base_manifests":manifests, "base_entries":entries, "base_manifest_bytes":manifest_bytes,
             "workspace_record_bytes":workspace_bytes, "revision_record_bytes":revision_bytes,
-            "database_file_bytes":std::fs::metadata(self.home.join("workspaces.redb"))?.len(),
-            "compression_level":self.config.compression_level,
+            "database_file_bytes":self.db.disk_space()?,
+            "compression":"lz4",
             "sharing":{
                 "base_manifest_key":"repository_id+commit",
-                "git_base_content":"All Git objects and source contents are stored in redb, shared across registrations by Git object ID",
-                "edited_blob_scope":"daemon", "edited_blob_key":"BLAKE3 of raw content",
+                "git_base_content":"All Git objects and source contents are stored in Fjall, shared across registrations by Git object ID",
+                "edited_blob_scope":"daemon", "edited_blob_key":"Git SHA-1 of typed raw object; legacy BLAKE3 blobs remain readable",
                 "remote_url_deduplication":false, "git_object_scope":"daemon", "git_object_key":"Git SHA-1 of typed raw object",
                 "new_workspace":"One workspace record and one empty revision; reuses an imported base manifest for the same repository ID and commit",
                 "fork":"One workspace record pointing to the existing immutable revision; copies no manifest or content"
@@ -1877,7 +1890,7 @@ impl Engine {
             "accounting_notes":[
                 "Counts include retained and not-yet-collected records; inspection makes no changes",
                 "Record byte counts are serialized keys/values, not physical allocation per workspace",
-                "Database file size includes page overhead and reusable space; it is not the sum of live record sizes",
+                "Database bytes include journals, indexes and compressed segments; legacy compressed_* counters now report logical bytes",
                 "Temporary copies, exports and package caches are outside these database sizes; Git objects are included",
                 "Different repository registrations have separate base manifests, even for the same path or remote URL"
             ]
@@ -1887,12 +1900,13 @@ impl Engine {
         // Hold write transaction across mark+sweep so publication cannot race reachability.
         let txn = self.db.begin_write()?;
         let removed;
+        let mut live_git = BTreeSet::new();
         {
             let mut t = txn.open_table(RECORDS)?;
             let mut live = BTreeSet::new();
             let mut stack = Vec::new();
             let mut blob_ids = BTreeSet::new();
-            for item in t.range("w/"..)? {
+            for item in t.range("w/".."w0")? {
                 let (k, v) = item?;
                 if !k.value().starts_with("w/") {
                     break;
@@ -1901,7 +1915,7 @@ impl Engine {
                 stack.push(ws.head);
             }
             // Exported commits pin their recorded virtual snapshots for reproducibility.
-            for item in t.range("export/"..)? {
+            for item in t.range("export/".."export0")? {
                 let (k, v) = item?;
                 if !k.value().starts_with("export/") {
                     break;
@@ -1909,7 +1923,7 @@ impl Engine {
                 let v: Value = serde_json::from_slice(v.value())?;
                 stack.push(string(&v, "revision")?.into());
             }
-            for item in t.range("lease/"..)? {
+            for item in t.range("lease/".."lease0")? {
                 let (k, v) = item?;
                 if !k.value().starts_with("lease/") {
                     break;
@@ -1932,11 +1946,13 @@ impl Engine {
                 for e in rev.changes.values().flatten() {
                     if e.source == "blob" {
                         blob_ids.insert(e.oid.clone());
+                    } else if e.source == "git" {
+                        live_git.insert(e.oid.clone());
                     }
                 }
             }
             let mut remove = Vec::new();
-            for item in t.range("v/"..)? {
+            for item in t.range("v/".."v0")? {
                 let (k, _) = item?;
                 if !k.value().starts_with("v/") {
                     break;
@@ -1945,7 +1961,7 @@ impl Engine {
                     remove.push(k.value().to_string());
                 }
             }
-            for item in t.range("b/"..)? {
+            for item in t.range("b/".."b0")? {
                 let (k, _) = item?;
                 if !k.value().starts_with("b/") {
                     break;
@@ -1962,7 +1978,7 @@ impl Engine {
         {
             let records = txn.open_table(RECORDS)?;
             let mut members = txn.open_table(git_store::MEMBERS)?;
-            let mut live = BTreeSet::new();
+            let mut live = live_git.clone();
             let mut orphaned = Vec::new();
             for item in members.iter()? {
                 let (member, _) = item?;
@@ -1979,7 +1995,34 @@ impl Engine {
             for key in orphaned {
                 members.remove(key.as_str())?;
             }
+            let mut overlays = txn.open_table(git_store::OVERLAYS)?;
+            let mut stale = Vec::new();
+            for row in overlays.iter()? {
+                let (key, _) = row?;
+                let (repo, oid) = key
+                    .value()
+                    .split_once('/')
+                    .context("invalid overlay membership")?;
+                if !live_git.contains(oid) || records.get(format!("r/{repo}").as_str())?.is_none() {
+                    stale.push(key.value().to_owned());
+                }
+            }
+            for key in stale {
+                overlays.remove(key.as_str())?;
+            }
             let mut objects = txn.open_table(git_store::OBJECTS)?;
+            let mut bases: Vec<_> = live.iter().cloned().collect();
+            while let Some(oid) = bases.pop() {
+                let record = objects
+                    .get(oid.as_str())?
+                    .context("missing live Git object")?;
+                if let Some(base) = git_store::delta_base(record.value())? {
+                    let base = base.to_string();
+                    if live.insert(base.clone()) {
+                        bases.push(base);
+                    }
+                }
+            }
             let mut orphaned = Vec::new();
             for item in objects.iter()? {
                 let (oid, _) = item?;
@@ -1990,10 +2033,28 @@ impl Engine {
             for oid in orphaned {
                 objects.remove(oid.as_str())?;
             }
+            // Candidate keys are append-only on ordinary writes. Clean them
+            // during the already-exclusive mark/sweep, never via a hot counter.
+            let mut candidates = txn.open_table(git_store::CANDIDATES)?;
+            let mut stale = Vec::new();
+            for row in candidates.iter()? {
+                let (key, _) = row?;
+                let oid = key
+                    .value()
+                    .rsplit('/')
+                    .next()
+                    .context("invalid delta candidate")?;
+                if !live.contains(oid) {
+                    stale.push(key.value().to_owned());
+                }
+            }
+            for key in stale {
+                candidates.remove(key.as_str())?;
+            }
         }
         txn.commit()?;
         Ok(
-            json!({"removed_records":removed,"note":"freed pages are reused; stop daemon and run compact to shrink the database file; Git objects and base manifests remain in redb"}),
+            json!({"removed_records":removed,"note":"Unreachable objects removed; Fjall reclaims obsolete segments during background compaction"}),
         )
     }
 }

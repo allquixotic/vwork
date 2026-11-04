@@ -15,6 +15,12 @@ pub mod transport;
 pub mod git_store;
 
 mod fetch;
+pub mod git_delta;
+pub mod kv;
 mod leases;
 pub mod maintenance;
+pub mod migration;
 pub mod storage;
+
+#[cfg(test)]
+mod legacy_storage;

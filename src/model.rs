@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Legacy setting, accepted for configuration compatibility; Fjall uses LZ4.
     pub compression_level: i32,
     pub port: u16,
     pub max_file_bytes: usize,
@@ -19,6 +20,7 @@ pub struct Config {
     pub temporary_max_ttl_seconds: u64,
     pub max_temporary_copies: usize,
     pub max_recovery_bytes: u64,
+    /// Legacy redb scheduling fields; Fjall manages background compaction.
     pub auto_compact: bool,
     pub compact_interval_seconds: u64,
     pub compact_idle_seconds: u64,

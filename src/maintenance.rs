@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{
     path::Path,
     sync::{
-        Arc, Mutex, RwLock,
+        Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -17,7 +17,6 @@ use std::{
 pub struct Service {
     engine: RwLock<Engine>,
     status: Mutex<Value>,
-    config: Config,
     failed: AtomicBool,
 }
 impl Service {
@@ -25,7 +24,6 @@ impl Service {
         Ok(Self {
             engine: RwLock::new(Engine::open(home, config.clone())?),
             status: Mutex::new(json!({"state":"ready"})),
-            config,
             failed: AtomicBool::new(false),
         })
     }
@@ -94,17 +92,9 @@ impl Service {
         };
         result
     }
-    pub fn automatic_check(&self, idle: Option<Duration>) -> Result<Value> {
-        if !self.config.auto_compact {
-            return Ok(json!({"compacted":false,"reason":"disabled"}));
-        }
-        let Some(idle) = idle else {
-            return Ok(json!({"compacted":false,"reason":"idle_unavailable"}));
-        };
-        if idle <= Duration::from_secs(self.config.compact_idle_seconds) {
-            return Ok(json!({"compacted":false,"reason":"user_active"}));
-        }
-        self.compact()
+    pub fn automatic_check(&self, _idle: Option<Duration>) -> Result<Value> {
+        // Fjall compacts incrementally, without the application's lifecycle gate.
+        Ok(json!({"compacted":false,"reason":"engine_managed"}))
     }
 }
 
@@ -160,49 +150,20 @@ pub fn idle_time() -> Option<Duration> {
 
 impl Engine {
     pub fn compact_database(&mut self) -> Result<Value> {
-        let path = self.home.join("workspaces.redb");
-        let before = std::fs::metadata(&path)?.len();
+        let before = self.db.disk_space()?;
         let threshold = self.config.compact_min_reclaim_bytes;
-        // No need even to traverse table statistics when the entire file is smaller.
         if before <= threshold {
             return Ok(
                 json!({"compacted":false,"reason":"below_threshold","before_bytes":before,"after_bytes":before,"reclaimed_bytes":0,"threshold_bytes":threshold}),
             );
         }
         self.call("gc", &json!({}))?;
-        let current_size = std::fs::metadata(&path)?.len();
-        let transaction = self.db.begin_write()?;
-        let stats = transaction.stats()?;
-        // Allocated pages include live data, metadata and pages pinned by commits.
-        // Subtract a conservative header/region allowance; do not mistake internal
-        // fragmentation or compressed-vs-logical bytes for removable free pages.
-        let allocated = stats
-            .allocated_pages()
-            .saturating_mul(stats.page_size() as u64);
-        let overhead = (current_size / (1024 * 1024 * 1024) + 1).saturating_mul(1024 * 1024);
-        let estimated = current_size
-            .saturating_sub(allocated)
-            .saturating_sub(overhead);
-        transaction.abort()?;
-        if estimated <= threshold {
-            return Ok(
-                json!({"compacted":false,"reason":"below_threshold","before_bytes":before,"after_bytes":current_size,"estimated_reclaimable_bytes":estimated,"threshold_bytes":threshold,"reclaimed_bytes":before.saturating_sub(current_size)}),
-            );
-        }
-        let db =
-            Arc::get_mut(&mut self.db).context("database readers remain; compaction deferred")?;
-        let changed = db.compact().context(
-            "compaction failed; committed data retained; restart to run recovery before retrying",
-        )?;
-        if !db
-            .check_integrity()
-            .context("post-compaction integrity check failed; stop and inspect database recovery")?
-        {
-            bail!("post-compaction check required repair; restart to verify before continuing");
-        }
-        let after = std::fs::metadata(path)?.len();
+        self.db
+            .compact()
+            .context("Fjall compaction failed; committed data retained")?;
+        let after = self.db.disk_space()?;
         Ok(
-            json!({"compacted":changed,"reason":if changed {"compacted"} else {"already_compact"},"before_bytes":before,"after_bytes":after,"estimated_reclaimable_bytes":estimated,"reclaimed_bytes":before.saturating_sub(after),"threshold_bytes":threshold,"integrity_checked":true}),
+            json!({"compacted":true,"reason":"compacted","before_bytes":before,"after_bytes":after,"reclaimed_bytes":before.saturating_sub(after),"threshold_bytes":threshold,"integrity_checked":false}),
         )
     }
 }
@@ -210,7 +171,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redb::{ReadableDatabase, ReadableTableMetadata, TableDefinition};
+    use crate::kv::TableDefinition;
     const DATA: TableDefinition<u64, &[u8]> = TableDefinition::new("maintenance_fixture");
 
     #[test]
@@ -222,27 +183,18 @@ mod tests {
         assert!(!schedule.due(now + Duration::from_secs(3600)));
         assert!(schedule.due(now + Duration::from_secs(7200)));
         let home = tempfile::tempdir()?;
-        let mut service = Service::open(home.path(), Config::default())?;
-        assert_eq!(service.automatic_check(None)?["reason"], "idle_unavailable");
-        assert_eq!(
-            service.automatic_check(Some(Duration::from_secs(300)))?["reason"],
-            "user_active"
-        );
+        let service = Service::open(home.path(), Config::default())?;
+        for idle in [
+            None,
+            Some(Duration::from_secs(300)),
+            Some(Duration::from_secs(301)),
+        ] {
+            assert_eq!(service.automatic_check(idle)?["reason"], "engine_managed");
+        }
         let job = service.engine.read().unwrap();
-        assert_eq!(
-            service.automatic_check(Some(Duration::from_secs(301)))?["reason"],
-            "busy"
-        );
+        assert_eq!(service.compact()?["reason"], "busy");
         drop(job);
-        assert_eq!(
-            service.automatic_check(Some(Duration::from_secs(301)))?["reason"],
-            "below_threshold"
-        );
-        service.config.auto_compact = false;
-        assert_eq!(
-            service.automatic_check(Some(Duration::from_secs(301)))?["reason"],
-            "disabled"
-        );
+        assert_eq!(service.compact()?["reason"], "below_threshold");
         service.failed.store(true, Ordering::SeqCst);
         assert!(service.call("health", &json!({})).is_err());
         assert!(service.compact().is_err());
@@ -255,7 +207,7 @@ mod tests {
         let service = Service::open(
             home.path(),
             Config {
-                compact_min_reclaim_bytes: 1_000_000,
+                compact_min_reclaim_bytes: 0,
                 ..Config::default()
             },
         )?;
@@ -281,11 +233,21 @@ mod tests {
         }
         let result = service.compact()?;
         assert_eq!(result["compacted"], true, "{result}");
+        // Engine compression makes the repeated 32 MiB fixture much smaller;
+        // physical reclamation timing belongs to Fjall, not a redb page hole.
+        assert_eq!(result["integrity_checked"], false);
         assert!(
-            result["reclaimed_bytes"].as_u64().unwrap() > 1_000_000,
+            service
+                .engine
+                .read()
+                .unwrap()
+                .db
+                .keyspace(DATA.name())?
+                .inner()
+                .disk_space()
+                < 8 * 1024 * 1024,
             "{result}"
         );
-        assert_eq!(result["integrity_checked"], true);
         drop(service);
         let engine = Engine::open(home.path(), Config::default())?;
         let tx = engine.db.begin_read()?;

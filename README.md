@@ -1,12 +1,17 @@
 # vwork
 
+The current library is embedded in Fastrock. Standalone 0.3.x release binaries
+use the older redb format. See [Fjall migration and concurrency](docs/fjall.md)
+for the new storage format; no separate vwork installation is needed by Fastrock.
+
 Compressed, copy-on-write **virtual source workspaces** for coding agents on
-constrained Windows desktops. One native Rust executable supplies a shared redb
+constrained Windows desktops. One native Rust executable supplies a shared Fjall
 store, CLI, stdio MCP server, Goose configuration generator and policy hook.
 
 A workspace is a reference to an immutable revision, not another directory full
-of source files. Git objects, refs and base contents live inside redb, shared by object ID. Edits are deduplicated
-by BLAKE3 and stored as zstd blobs (level **3**, configurable). Forks share history.
+of source files. Git objects, refs and base contents live inside Fjall, shared by object ID. Edits are deduplicated
+by Git object ID, with bounded Git deltas. Fjall applies LZ4 to stored data,
+indexes, journals and large values. Forks share history.
 Filesystem tools use **tracked temporary copies**, serialized per repository, with explicit release and automatic expiry cleanup.
 
 **This is an initial implementation, not a filesystem driver.** Native editors,
@@ -71,7 +76,7 @@ Git tree**; uncommitted/ignored files from your original checkout are not import
 
 Agents can also call `vwork_repo_clone` with a selected Git URL or
 `vwork_repo_register` with an existing absolute repository path. Registration
-imports objects and refs into redb; subsequent reads do not depend on that path.
+imports objects and refs into Fjall; subsequent reads do not depend on that path.
 Identical Git objects from separate registrations share storage by object ID.
 Existing registrations migrate on first 0.3 startup, so keep their original Git
 stores available until migration succeeds. Back up stopped state before upgrading;
@@ -93,10 +98,10 @@ vwork mcp --workspace task-one       vwork CLI / other MCP bridges
     +-------- authenticated localhost -----+
                        |
                    vwork serve
-             single owner of one redb file
+             single owner of one Fjall directory
                /                    \
        Git objects/refs        compressed changed blobs
-              (both inside the same redb file)
+              (both inside the same Fjall directory)
                        |
            explicit export or configured task
                        |
@@ -121,13 +126,13 @@ partially changing the workspace.
   branch, index or working files.
 - Explicit full/filtered exports and import of explicitly selected physical edits.
 - Human-defined build/test tasks with timeouts, bounded output and per-repo locks.
-- A disposable Git index/HEAD/object view exported from redb for Git-aware builds.
+- A disposable Git index/HEAD/object view exported from Fjall for Git-aware builds.
   `git describe` and `git rev-parse` work; virtual edits appear staged and dirty.
 - Configured npm, Cargo, pip, uv and CDK projects with install/build/test actions, reusable
   caches, dependency-input checks and explicit lockfile/source writeback.
 - Logical directory-size reports, read-only MCP shared-storage counters, global storage stats, GC, history squash and
-  online redb compaction, automatically checked hourly when the user is idle.
-- Incremental `repo_fetch` refreshes saved origins inside redb without moving existing workspaces.
+  incremental engine-managed compaction; explicit whole-store maintenance remains available.
+- Incremental `repo_fetch` refreshes saved origins inside Fjall without moving existing workspaces.
 - Generated Goose recipe/config fragment, consumer `AGENTS.md` and native
   `PreToolUse` hook. Server instructions work with other stdio MCP clients too.
 
@@ -143,19 +148,19 @@ See [all operations and examples](docs/operations.md),
 Restart the daemon after changing it:
 
 ```toml
-compression_level = 3
+compression_level = 3           # legacy compatibility only; storage uses Fjall LZ4
 port = 0                       # random loopback port
 max_file_bytes = 67108864       # 64 MiB per file
 max_results = 1000
 max_output_bytes = 1048576      # per task stream; text/diff budget
 max_cached_bases = 4            # in-memory path indexes
-max_run_history = 20            # bounded results retained in redb; 0 disables retention
+max_run_history = 20            # bounded results retained in Fjall; 0 disables retention
 task_timeout_seconds = 600
 temporary_ttl_seconds = 1800    # 30 minutes, renewed after each build
 temporary_max_ttl_seconds = 86400
 max_temporary_copies = 4
 max_recovery_bytes = 134217728  # source edits preserved before cleanup
-auto_compact = true
+auto_compact = true             # legacy compatibility; Fjall manages background compaction
 compact_interval_seconds = 3600
 compact_idle_seconds = 300
 compact_min_reclaim_bytes = 1000000000

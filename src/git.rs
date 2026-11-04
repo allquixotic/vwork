@@ -1,10 +1,10 @@
+use crate::kv::Database;
 use crate::{
     git_store,
     model::{Entry, Repository, Tree},
 };
 use anyhow::{Context, Result, bail, ensure};
 use git2::{ObjectType, Oid};
-use redb::Database;
 use std::{collections::BTreeMap, path::Path, process::Command, sync::Arc};
 
 /// Accept ordinary Git transports or an explicit local path, never helper syntax
@@ -97,7 +97,7 @@ pub fn path_argument(path: &Path) -> std::ffi::OsString {
 }
 
 pub fn open(db: &Arc<Database>, repo: &Repository, level: i32) -> Result<git2::Repository> {
-    ensure!(repo.stored, "repository has not been imported into redb");
+    ensure!(repo.stored, "repository has not been imported into Fjall");
     Ok(git2::Repository::from_odb(git_store::odb(
         db.clone(),
         &repo.id,
@@ -362,7 +362,7 @@ pub fn log(db: &Arc<Database>, repo: &Repository, reference: &str, limit: usize)
 }
 
 /// A disposable compatibility repository for external tools that require .git.
-/// All authoritative objects remain in redb. No alternates or original checkout access.
+/// All authoritative objects remain in Fjall. No alternates or original checkout access.
 pub fn prepare_build(
     db: &Arc<Database>,
     source: &Repository,

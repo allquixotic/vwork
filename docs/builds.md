@@ -56,14 +56,14 @@ for managed actions; custom tasks remain useful for other tools and unusual flag
 ## Git version discovery without a clone
 
 The build tree contains a regular `.git` pointer to `<lease>/git`. Objects and
-refs are exported from redb using git2/libgit2; no original Git directory or
+refs are exported from Fjall using git2/libgit2; no original Git directory or
 alternates are required. This disk view exists only for tools needing native Git,
 and is removed with the lease. Virtual reads and edits never require it.
 
 Before each task or package action:
 
 1. HEAD becomes the workspace's real **base Git commit**.
-2. Heads, tags and remote-tracking ref names/OIDs are refreshed from redb.
+2. Heads, tags and remote-tracking ref names/OIDs are refreshed from Fjall.
 3. The private index becomes the complete virtual snapshot. Compressed overlay
    content gets Git objects only in the private admin directory.
 4. Git-aware tools run normally from the build tree or a project subdirectory.
@@ -95,7 +95,7 @@ Request physical copies sparingly. Use `workspace_temporary` with a concrete
 create/reuse a lease. Import wanted edits and save artifacts, then call
 `temporary_release` with the returned ID. Renew before expiry while still using
 it. `temporary_list` exposes active copies, cleanup failures and recovery names.
-Expiry/startup cleanup preserves bounded source edits into redb and removes the
+Expiry/startup cleanup preserves bounded source edits into Fjall and removes the
 copy; it cannot preserve unlimited generated artifacts. See the cleanup contract
 in [architecture](architecture.md).
 

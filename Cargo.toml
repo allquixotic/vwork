@@ -1,6 +1,6 @@
 [package]
 name = "vwork"
-version = "0.3.5"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Compressed virtual workspaces and MCP tools for coding agents"
@@ -20,6 +20,7 @@ git2 = { version = "0.21", features = ["https", "ssh", "vendored-libgit2", "vend
 libgit2-sys = "0.18.8"
 im = { version = "15", features = ["serde"] }
 redb = "4.4"
+fjall = "=3.1.13"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

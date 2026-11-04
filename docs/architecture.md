@@ -6,25 +6,23 @@
    Revisions contain changed paths and deletion tombstones and reference a parent.
    A fork writes a new workspace reference to the same revision; it copies no
    source content and no full path manifest.
-2. **Content blobs:** changed file bytes are hashed with BLAKE3 and compressed with
-   zstd. Multiple paths/workspaces/repos can reference one blob. This is whole-file
-   deduplication, not rolling-chunk deduplication or binary delta compression.
-3. **Database transactions:** redb uses copy-on-write B+trees. That provides atomic
-   publication and durable state, but it does not magically supply application
-   branches. The revision/overlay layer supplies those.
+2. **Content objects:** new edits and Git history share one typed Git object ID
+   namespace. Bounded standard Git deltas reduce related versions; Fjall applies
+   LZ4. Legacy BLAKE3 edit blobs remain readable and shared by hash.
+3. **Database transactions:** Fjall 3.1.13 uses optimistic serializable
+   transactions over an LSM tree. Revision guards remain per workspace; immutable
+   objects and per-repository membership keys do not update hot reference counts.
 
-All persistent Git objects, refs and source content live in redb. `git2`/libgit2
-reads and writes through a custom redb object backend; normal reads, history,
-trees and commits launch no Git CLI processes. Typed raw Git objects are hashed
-by libgit2, zstd-compressed and shared daemon-wide by Git object ID. Reads verify
-both size and hash. Repository membership records identify objects needed for a
-temporary native Git view. SHA-1 repositories are supported; unsupported object
-formats fail explicitly rather than silently converting IDs.
+All persistent Git objects, refs and source content live in Fjall. libgit2 uses
+our in-process ODB backend. Git delta chains are bounded to four levels and
+reconstruction verifies both object IDs and lengths. GC retains transitive delta
+bases, even across repositories. SHA-1 repositories are supported. Unsupported
+object formats fail explicitly.
 
 Registration imports every available object and resolved ref, including history
 and tags, without changing the original checkout/index/refs. It captures committed
 state, not dirty or ignored checkout files. Clone uses libgit2 and stores its
-result in redb. Remote transport uses a journaled temporary pack directory; success,
+result in Fjall. Remote transport uses a journaled temporary pack directory; success,
 failure and restart cleanup remove it. Transfer progress has a deadline/8 GiB pack
 limit and sockets have connect/read timeouts. Noninteractive HTTPS authentication
 can use the installed Git credential helper; SSH uses the agent. No credentials
@@ -33,15 +31,15 @@ missing original stores produce a restoration instruction without deleting data.
 
 Base manifests are stored once per repository ID and commit. New workspaces reuse
 them; forks share an immutable revision. Different registrations may have separate
-manifests while sharing identical Git objects. Edited file blobs share by BLAKE3.
+manifests while sharing identical Git objects. New edits share by Git object ID; migrated legacy blobs share by BLAKE3.
 A cached persistent `im::OrdMap` shares in-memory path nodes across snapshots.
 `storage_info` reports these scopes and counters without creating probe workspaces.
-Serialized record bytes are logical sizes; redb file size includes overhead and
-reusable pages. Temporary copies and deliberate durable exports are outside redb.
+Serialized record bytes are logical sizes; Fjall directory size includes compressed segments, journals and indexes. Temporary copies and deliberate durable exports are outside Fjall.
 
 ## One owner, many clients
 
-Only `vwork serve` opens the redb database. A file lock rejects a second owner.
+Fastrock embeds the sole owner. The retained CLI can alternatively use `vwork serve`;
+a file lock rejects a second process.
 `start` and the default MCP entrypoint share a per-home startup lock, bounded
 authenticated health probes and daemon launch. A separate daemon lock protects
 existing owners and exclusive maintenance. Startup never kills a nonresponsive owner,
@@ -54,7 +52,8 @@ Windows. Redirecting their output alone does not suppress console creation.
 Pipes and exit codes are preserved. Normal user-invoked CLI behavior is unchanged.
 CLI processes and stdio MCP bridges connect to its authenticated loopback HTTP
 endpoint (explicitly bypassing HTTP proxy environment variables) using a generated token in `<home>/connection.json`. The daemon uses
-multiple request workers; redb serializes writes. A per-repository mutex
+multiple request workers; Fjall allows independent transactions to prepare concurrently
+and briefly coordinates durable commits. A per-repository mutex
 serializes builds and exports. Independent repositories can build concurrently.
 
 Workspace writes compare `expected_revision` with the current workspace head in
@@ -65,7 +64,7 @@ runs; build results still name exactly the snapshot tested.
 
 A lifecycle read lock protects active operations from GC. GC takes the write
 lock and performs mark/sweep while no operation can lose the content it is
-reading. A successful stop waits for in-flight work before closing redb.
+reading. A successful stop waits for in-flight work before closing Fjall.
 
 Use one local state directory per daemon. Do not put a live database on SMB,
 OneDrive or another syncing/network filesystem. Do not open it from another
@@ -77,12 +76,12 @@ The Windows state directory inherits its parent ACL; use your private profile.
 ```text
 <home>/
   config.toml          # user settings
-  workspaces.redb      # all repository/workspace records, blobs, task definitions/results
+  workspaces.fjall/      # all repository/workspace records, blobs, task definitions/results
   daemon.lock          # exclusive owner lock; existence alone does not mean locked
   connection.json      # current loopback URL/token/PID; do not publish
   daemon.log           # background owner diagnostics
   temporary/<lease>/
-    owner                        # ownership marker; journal also in redb
+    owner                        # ownership marker; journal also in Fjall
     tree/                        # temporary source copy, .git pointer
     git/                         # disposable exported Git objects/index/refs
     targets/, environments/      # package outputs and environments
@@ -96,10 +95,10 @@ lease journals and recovery history. `git_objects_v1` holds compressed typed Git
 objects; `git_members_v1` maps repositories to shared object IDs. Original source
 paths are provenance and export-overlap protection, not storage dependencies.
 The old binary rejects schema 2. Back up stopped state before upgrading. After
-migration, the redb database contains the source/history needed for restoration;
+migration, the Fjall database contains the source/history needed for restoration;
 also keep config and any deliberately retained physical artifacts.
 
-Native tools cannot read redb directly. An explicit temporary request or configured
+Native tools cannot read Fjall directly. An explicit temporary request or configured
 build exports a leased copy with private Git objects, HEAD/index and refs. No
 alternates point outside the lease. Builds reuse a lease per repository and pin
 its revision. Package targets/environments/artifacts are under that lease, so
@@ -134,7 +133,7 @@ markers are adopted and reclaimed, preserving source edits the same way.
   It reports truncation and a continuation offset. One result can exceed a tiny
   configured output budget; the line/context limits still bound it.
 - `max_run_history` bounds stored task results globally (20 by default, 0 retains
-  none). Results are stored once, in redb; output streams are always drained even
+  none). Results are stored once, in Fjall; output streams are always drained even
   after the capture limit so a verbose child does not deadlock.
 - `max_cached_bases` limits cached path indexes, not bytes. One enormous path
   manifest can still consume substantial RAM. Eviction clears the cache when
@@ -144,7 +143,7 @@ markers are adopted and reclaimed, preserving source edits the same way.
 - At most 32 simultaneous request workers are accepted. Expensive searches may
   compete for CPU/disk; this release does not implement search cancellation.
 
-Search is a scan over the selected virtual snapshot, with a reusable redb-backed object
+Search is a scan over the selected virtual snapshot, with a reusable Fjall-backed object
 reader within the request. It skips binary/non-UTF-8/oversized files and respects
 edits and tombstones. There is no persistent full-text index yet. Narrow with
 globs and paginate. `workspace_size` sums logical file sizes from metadata and
@@ -174,32 +173,14 @@ needs no content reads; it is not an NTFS allocation scanner.
   convenience policy. Build processes have your normal user permissions.
 
 Sources:
-[redb design](https://github.com/cberner/redb/blob/master/docs/design.md),
-[redb API](https://docs.rs/redb/latest/redb/),
+[Fjall design](https://github.com/cberner/Fjall/blob/master/docs/design.md),
+[Fjall API](https://docs.rs/Fjall/latest/Fjall/),
 [zstd compression API](https://docs.rs/zstd/latest/zstd/stream/fn.encode_all.html).
 
 ## Idle maintenance and startup recovery
 
 A daemon-wide read/write gate surrounds all requests and temporary-copy cleanup.
-Compaction takes the exclusive side without waiting for active requests, runs GC,
-preflights free pages, and moves live pages only above the configured threshold.
-This also excludes long-running builds/fetches. Connection identity stays stable.
-A failed compaction/integrity check puts the service into a failed state; restart
-must validate recovery before normal requests can resume. `maintenance_status`
-remains readable. The monotonic hourly timer checks OS input idle >300 seconds;
-unknown idle state skips. Manual compaction uses the same size threshold.
-
-Startup takes a recovery lock, snapshots the database through an exclusively
-locked file handle, then uses redb's repair and full integrity checking before
-accepting clients. Windows requires that snapshot happen before redb's own
-byte-range lock is acquired. One backup and one partial file bound recovery
-storage; clean validation removes the snapshot. Corruption never triggers creation
-of a replacement empty DB. See operations.md for backup/restore limits.
-
-The small [system-idle-time wrapper](https://docs.rs/system-idle-time/1.0.4/system_idle_time/)
-provides macOS IOKit idle time. Its host-selected build script prevents using it
-for Mac-to-Windows cross compilation, so Windows calls
-[GetLastInputInfo](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getlastinputinfo)
-directly with wrapping tick arithmetic. The
-[redb Database API](https://docs.rs/redb/4.4.0/redb/struct.Database.html)
-provides transactional compaction and crash/integrity recovery.
+Fjall performs incremental background compaction without taking the application
+lifecycle gate. Explicit full compaction takes that gate and runs GC first.
+Automatic legacy hourly whole-store compaction is disabled. Startup opens the
+engine directly; one-time redb import is described in [fjall.md](fjall.md).

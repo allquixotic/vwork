@@ -42,19 +42,19 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "repo_register",
-        "Import all Git objects, refs and committed source from an absolute existing repository path into redb under a new ID. Original checkout/index/refs are preserved; repo_fetch refreshes this registration later. Reuse this registration across virtual workspaces.",
+        "Import all Git objects, refs and committed source from an absolute existing repository path into Fjall under a new ID. Original checkout/index/refs are preserved; repo_fetch refreshes this registration later. Reuse this registration across virtual workspaces.",
         vec![("repo", "string", true), ("path", "string", true)],
         false,
     );
     add(
         "repo_clone",
-        "Clone a user-selected Git source into redb under a new repository ID. All persistent objects and refs stay in redb; temporary transfer packs are cleaned after import/restart. Accepts HTTPS/SSH/Git/file URLs, SSH host:path or an absolute local repository path. No URL passwords/query tokens or arbitrary Git arguments. Then create virtual workspaces from HEAD or registered branch names.",
+        "Clone a user-selected Git source into Fjall under a new repository ID. All persistent objects and refs stay in Fjall; temporary transfer packs are cleaned after import/restart. Accepts HTTPS/SSH/Git/file URLs, SSH host:path or an absolute local repository path. No URL passwords/query tokens or arbitrary Git arguments. Then create virtual workspaces from HEAD or registered branch names.",
         vec![("repo", "string", true), ("source", "string", true)],
         false,
     );
     add(
         "repo_fetch",
-        "Fetch new Git objects and branch/tag refs into an existing redb repository using its saved source. Optional source selects a Git URL/absolute repository path and is saved after success; older registrations may need it once. Existing workspaces stay pinned, private commits are preserved. Create a workspace from the fetched ref to use new source. prune=true removes vanished upstream branches/tags; default keeps them. No checkout or Git CLI transport.",
+        "Fetch new Git objects and branch/tag refs into an existing Fjall repository using its saved source. Optional source selects a Git URL/absolute repository path and is saved after success; older registrations may need it once. Existing workspaces stay pinned, private commits are preserved. Create a workspace from the fetched ref to use new source. prune=true removes vanished upstream branches/tags; default keeps them. No checkout or Git CLI transport.",
         vec![
             ("repo", "string", true),
             ("source", "string", false),
@@ -244,7 +244,7 @@ pub fn tools(bound: bool) -> Vec<Value> {
     );
     add(
         "workspace_commit",
-        "Store exact virtual snapshot in redb as a real Git commit under refs/vwork/commits. Does not change original branch/index or push.",
+        "Store exact virtual snapshot in Fjall as a real Git commit under refs/vwork/commits. Does not change original branch/index or push.",
         vec![w, e, ("message", "string", true)],
         false,
     );

@@ -4,7 +4,7 @@ vwork provides native Rust orchestration for installed package tools. Package
 managers and compilers still need physical source, dependency caches and build
 outputs. These actions use the **one reusable leased copy per repo**, not a
 checkout/environment per virtual workspace. They take the same lock as custom
-tasks and prepare its Git view from redb, so Git-aware build scripts work.
+tasks and prepare its Git view from Fjall, so Git-aware build scripts work.
 
 The human registers named projects once. An agent gets `vwork_package_list` and
 `vwork_package_run`; it cannot choose a new executable, arbitrary arguments or
@@ -39,7 +39,7 @@ vwork --home /path/to/state call package_list --json '{"repo":"mono"}'
 ```
 
 `package_configure` replaces the named project's configuration. The configuration
-is stored in redb and immediately available; no daemon restart is needed.
+is stored in Fjall and immediately available; no daemon restart is needed.
 
 | Field | Meaning |
 |---|---|

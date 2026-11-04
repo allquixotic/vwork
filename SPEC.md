@@ -2,6 +2,7 @@
 Provide compressed, isolated, persistent virtual workspaces for Goose without admin rights, symlinks, or per-agent full checkouts.
 
 # §C
+- 2026-11-04 supersedes redb/Zstd clauses: latest stable Fjall 3.1.13, optimistic concurrent transactions, Fjall-owned LZ4; application only Git delta encoding. Legacy redb decoding migration-only; preserve original and validate before activation.
 - Native Rust executables; git2/libgit2 handles Git objects, history, imports and clone transport. Git CLI only for explicitly configured tasks or credential helpers.
 - macOS and Windows supported. Publish binaries only for Windows x64, inside ZIP.
 - One authenticated loopback daemon owns one redb database. Multiple repositories, workspaces, and MCP clients.
@@ -39,7 +40,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V19: Read-only MCP storage info ! report shared manifests/blobs and per-workspace/revision records without probe mutations; same registered repo+commit ! reuse base manifest; identical edits ! reuse daemon blobs. Test `v19_storage_sharing`.
 - V20: MCP repository setup ! structured clone/register only; clones ! redb-owned objects/refs; bounded temporary transport staging; no persistent checkout; no overwrite; registration publication ! unique ID transaction; failures ! no registered partial clone. Tests `v20_repository_setup`, `v20_clone_failure_preserves_paths`, `v20_registration_is_atomic`.
 
-- V21: Register/clone import all Git objects/refs into redb via git2; reads/history/commits work after source removal; legacy registration migrates before use without modifying source; shared payloads retain per-repository membership. Tests `v21_redb_owns_git`, `v21_legacy_migration`, `v21_clone_transport`, `v21_import_batches`, `v21_shared_objects_keep_repository_membership`.
+- V21: Register/clone import all Git objects/refs into redb via git2; reads/history/commits work after source removal; legacy registration migrates before use without modifying source; shared payloads retain per-repository membership. Tests `v21_redb_owns_git`, `v21_legacy_repository_metadata_upgrade`, `v21_clone_transport`, `v21_import_batches`, `v21_shared_objects_keep_repository_membership`.
 - V22: Temporary copies ! journaled ownership, bounded count/TTL, explicit release/renew, startup and periodic expiry cleanup; active jobs protected; failed cleanup retained for retry; preserve bounded nonignored source edits as recovery snapshot before automatic removal. Tests `v22_temporary_lifecycle`, `v22_temporary_recovery`, `v22_cleanup_ownership`, `v22_temporary_bounds_and_active_job`, `v22_legacy_build_cleanup`, `v22_recovery_limit_preserves_copy`, `v22_periodic_cleanup`.
 - V23: uv/CDK ! structured configured package actions over temporary copies; report completion, revision, lease and changes; no implicit virtual writeback or CDK deployment. Tests `v23_uv_cdk_plans`, `v23_uv_cdk_execution`.
 - V24: Compaction ! daemon-exclusive, retain connection identity, reject/defer active jobs; hourly automatic check ! OS input idle >300s, unknown idle ! skip; GC then compact only if estimated reclaimable bytes >1,000,000,000 by default; return measured before/after and skip/error reasons. Tests `v24_online_compaction`, `v24_compact_reclaims_holes_and_preserves_live_data`, `v24_schedule_idle_and_busy`.
@@ -54,9 +55,14 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V31: Embedded open ! no expired-tree deletion; caller schedules reaping separately and retains changed-file recovery. Lock conflict ! ownership guidance, no corruption/backup advice or repair snapshot. Verify `v31_embedded_open_defers_cleanup_and_preserves_expired_edits`, `v31_lock_conflict_is_not_corruption`.
 
+- V32: Fjall 3.1.13 ! optimistic concurrent writers, durable atomic commits; raw content addressed once, per-workspace/per-conversation keys; no per-write shared counters/refcounts. Tests `v32_disjoint_writers_prepare_together_same_head_conflicts`, `v33_bulk_deltas_dedup_bounds_and_reopen`.
+- V33: Committed Git trees ! retain overlay object membership after virtual revision unpin; verify `export_retention`.  Git objects ! raw or standard Git copy/insert deltas, hash-verified reconstruction, bounded depth/bytes, base reachability through GC; no application entropy codec on new writes. Tests `v33_delta_roundtrip_bounds`, `v33_overlay_gc_preserves_shared_bases_and_reclaims_dead_edits`, `v33_first_import_batch_uses_git_deltas`, `v33_corrupt_delta_fails_closed`.
+- V34: Legacy redb ! source preserved, bounded resumable migration, all known Fastrock/vwork tables transferred with original keys and decoded values; unknown types/corruption ! fail closed. Destination activated only after complete validation and durable marker; normal startup ! no repeat scan. Tests `v34_automatic_migration_preserves_source_and_reopens_without_source`, `v34_copy_and_delta_repack_resume_after_cancellation`, `v34_bad_locked_changed_and_existing_destinations_fail_closed`, `v34_dirty_legacy_repairs_only_private_copy`.
+
 # §T
 id|status|task|cites
 ---|---|---|---
+T20|~|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,I.storage
 T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V2,V3,V4,V5,I.storage
 T2|x|Git export, merges, managed tasks and materialization|V4,V5,V6,V7,I.cli
 T3|x|Daemon, CLI, MCP, policy hook, Goose generator|V8,I.rpc,I.goose
@@ -129,3 +135,9 @@ B34|2026-11-03|Every clean open copied/fsynced entire redb then ran full integri
 B35|2026-11-03|Cross-compiled package tests on games lacked Cargo and retained the Mac source path; 46/48 workspace tests and all storage/recovery/daemon/policy tests passed|Require native Windows/macOS CI package coverage; do not weaken fixture assertions; T19
 
 B36|2026-11-03|Embedded database open synchronously reaped expired trees; all open failures shared backup advice, including ownership conflicts|V31; separate embedded initialization from scheduled cleanup and classify lock conflicts without repair advice
+
+B37|2026-11-04|Initial Fjall adapter used keyspace iteration absent from transactional wrapper and deprecated global buffer setting that upstream does not enforce|V32,V34; iterate explicit read snapshot, configure supported per-keyspace memtables and journal limits, measure guarded native memory
+
+B38|2026-11-04|Compression acceptance compared total Fjall bytes with payload size, counting its preallocated 64 MiB active journal as data|V32,V33; assert compressed keyspace bytes separately and retain total directory accounting in benchmarks
+
+B39|2026-11-04|New shared Git edit namespace removed legacy blob-to-Git promotion during commit; GC then reclaimed blobs still referenced by retained Git commits|V33; promote membership without copying bytes, distinguish overlay revision roots from permanent history, retain export_retention regression

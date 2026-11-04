@@ -24,9 +24,9 @@ Use forward slashes for all **virtual** paths, on every OS.
 |---|---|---|
 | `storage_info` | none | Read-only daemon storage counters, shared manifests/blobs and deduplication scopes |
 | `repo_list` | none | Registered IDs/provenance/refs |
-| `repo_register` | `repo`, `path` | Import existing repository objects/refs into redb |
+| `repo_register` | `repo`, `path` | Import existing repository objects/refs into Fjall |
 | `repo_fetch` | `repo`, optional `source`, `prune` | Refresh saved origin using incremental libgit2 transfer; atomically update refs, preserve workspace snapshots |
-| `repo_clone` | `repo`, `source` | Clone a selected URL or local repo into redb |
+| `repo_clone` | `repo`, `source` | Clone a selected URL or local repo into Fjall |
 | `workspace_temporary` | `expected_revision`, `purpose`, optional `ttl_seconds` | Tracked temporary filesystem copy |
 | `temporary_list` | none | Active copies, cleanup failures, transfer staging, recent recovery workspaces |
 | `temporary_renew` | `lease`, optional `ttl_seconds` | Renew while a tool still needs a copy |
@@ -168,7 +168,7 @@ This is substantially less work than moving live pages. History still held by
 workspaces, forks, or private Git commits is retained. Compaction verifies database
 integrity afterward; a failure blocks further operations until restart/recovery.
 
-Base manifests and imported Git history remain in redb; there is no repository
+Base manifests and imported Git history remain in Fjall; there is no repository
 unregister/history-pruning operation. GC also reclaims object records left by
 failed unpublished imports. Registered Git objects remain shared by object ID.
 
@@ -186,22 +186,17 @@ register the existing original repos again.
 
 ## Recovery and troubleshooting
 
-At startup, existing databases are opened without creation. Empty/truncated or
-unopenable files cause a clear error; vwork never silently replaces them. redb's
-native crash recovery restores the last committed state, followed by an integrity
-check before requests are accepted. A pre-check copy is written as `workspaces.redb.recovery.partial`, then published
-as `workspaces.redb.recovery.bak` after a successful repair; one snapshot plus one
-partial copy bounds recovery evidence. Failed checks preserve earlier backup evidence. A repaired startup retains that snapshot; the next clean
-startup replaces then removes it after verification. Keep independent backups
-for long-term recovery. Every existing startup scans integrity and temporarily
-needs approximately one extra database-sized file, so large starts can take time.
+The live store is `workspaces.fjall/`. An existing legacy `workspaces.redb`
+automatically migrates into a separately staged Fjall store; the original remains
+untouched. Interrupted migrations resume, and dirty redb recovery operates only
+on a private copy. Every logical record is verified before activation. Existing
+live or damaged destinations are never replaced. See [fjall.md](fjall.md).
 
-If validation fails, serving stops and the original or pre-check copy is retained.
-Inspect `daemon.log`; restore a known-good backup **with the daemon stopped**.
-A snapshot of damaged bytes is diagnostic evidence, not a promise of recovery.
-Hardware damage beyond redb's recoverable committed state requires a backup.
+Stop the owner before backing up the **whole** Fjall directory. Normal startup
+uses Fjall's recovery and does not scan or copy the legacy source again. A lock
+conflict means another process owns the store, not database corruption.
 
-### Fetching updates
+## Fetching updates
 
 `repo_fetch` uses a stored source URL/path, noninteractive Git credential helpers
 or the SSH agent. Older imported registrations can supply `source` once. No pull,
@@ -209,7 +204,7 @@ merge, push, or arbitrary Git arguments are exposed. Failed transfers leave refs
 unchanged. By default vanished refs remain; `prune: true` removes vanished upstream
 branch/tag refs while preserving `refs/vwork/` commits and pinned workspaces.
 Only newly received packs are staged on disk, journaled and removed after import
-or at restart. Existing objects are read directly from redb for negotiation;
+or at restart. Existing objects are read directly from Fjall for negotiation;
 no persistent Git object store or checkout is created. Create a new workspace
 from `origin/main` (or the appropriate branch) to use the updated snapshot.
 
@@ -220,7 +215,7 @@ from `origin/main` (or the appropriate branch) to use the updated snapshot.
   to defeat a running owner. The OS releases the lock on process exit.
 - **Revision conflict:** inspect current content and reconcile, then edit with the
   new head. A successful build of an earlier head does not validate newer changes.
-- **Missing Git object:** restore a verified redb backup. Only a legacy registration still
+- **Missing Git object:** restore a verified complete Fjall backup. Only a legacy registration still
   awaiting migration needs its original Git object store; schema 2 keeps objects
   and base contents in the database.
 - **Export rejected:** check absolute path, no repo overlap, empty/managed target,
