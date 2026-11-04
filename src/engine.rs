@@ -157,28 +157,25 @@ impl Engine {
         self.get(&key("v", id))
     }
 
-    fn import_base(&self, repo: &Repository, commit: &str) -> Result<()> {
-        let prefix = format!("t/{}/{commit}/", repo.id);
-        if self.get::<bool>(&format!("m/{}/{commit}", repo.id)).is_ok() {
-            return Ok(());
-        }
-        let tree = git::tree(&self.db, repo, commit)?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut table = txn.open_table(RECORDS)?;
-            for (p, e) in tree {
-                table.insert(
-                    format!("{prefix}{p}").as_str(),
-                    serde_json::to_vec(&e)?.as_slice(),
-                )?;
+    /// Resolve overlays newest-first, then only this path in the Git base.
+    pub fn entry(&self, ws: &Workspace, path: &str) -> Result<Option<Entry>> {
+        let path = crate::model::path(path)?;
+        let head = self.revision(&ws.head)?;
+        let mut revision = head.clone();
+        for _ in 0..100_000 {
+            ensure!(
+                revision.repo == ws.repo && revision.base == head.base,
+                "invalid revision ancestry"
+            );
+            if let Some(entry) = revision.changes.get(&path) {
+                return Ok(entry.clone());
             }
-            table.insert(
-                format!("m/{}/{commit}", repo.id).as_str(),
-                b"true".as_slice(),
-            )?;
+            match revision.parent {
+                Some(parent) => revision = self.revision(&parent)?,
+                None => return git::entry(&self.db, &self.repo(&ws.repo)?, &head.base, &path),
+            }
         }
-        txn.commit()?;
-        Ok(())
+        anyhow::bail!("revision chain too deep; create a compacted workspace")
     }
 
     pub fn snapshot(&self, ws: &Workspace) -> Result<(Revision, Tree)> {
@@ -192,10 +189,22 @@ impl Engine {
         let mut tree = if let Some(tree) = cached {
             tree
         } else {
-            let mut tree = Tree::new();
-            for (k, v) in self.scan(&prefix)? {
-                tree.insert(k[prefix.len()..].into(), serde_json::from_slice(&v)?);
-            }
+            // Existing manifests remain readable. New bases use the already
+            // deduplicated Git trees, without writing a second per-file index.
+            let transaction = self.db.begin_read()?;
+            let imported = transaction
+                .open_table(RECORDS)?
+                .get(format!("m/{}/{}", ws.repo, head.base).as_str())?
+                .is_some();
+            let tree = if imported {
+                let mut tree = Tree::new();
+                for (k, v) in self.scan(&prefix)? {
+                    tree.insert(k[prefix.len()..].into(), serde_json::from_slice(&v)?);
+                }
+                tree
+            } else {
+                git::tree(&self.db, &self.repo(&ws.repo)?, &head.base)?
+            };
             let mut cache = self.base_cache.lock().unwrap();
             if cache.len() >= self.config.max_cached_bases {
                 cache.clear();
@@ -670,7 +679,6 @@ impl Engine {
                 let ws_id = string(a, "workspace")?;
                 valid_id(ws_id)?;
                 let base = git::resolve(&self.db, &repo, optional(a, "reference", "HEAD"))?;
-                self.import_base(&repo, &base)?;
                 let rev = Revision {
                     id: id(),
                     repo: repo.id.clone(),
@@ -820,7 +828,16 @@ impl Engine {
             );
         }
         let repo = self.repo(&ws.repo)?;
-        let (rev, tree) = self.snapshot(&ws)?;
+        let (rev, tree) = if op == "files_read" {
+            let p = path(string(a, "path")?)?;
+            let mut tree = Tree::new();
+            if let Some(entry) = self.entry(&ws, &p)? {
+                tree.insert(p, entry);
+            }
+            (self.revision(&ws.head)?, tree)
+        } else {
+            self.snapshot(&ws)?
+        };
         let mut reader = None;
         let limit = number(a, "limit", 200).min(self.config.max_results);
         let offset = number(a, "offset", 0);
@@ -1884,7 +1901,7 @@ impl Engine {
                 "git_base_content":"All Git objects and source contents are stored in Fjall, shared across registrations by Git object ID",
                 "edited_blob_scope":"daemon", "edited_blob_key":"Git SHA-1 of typed raw object; legacy BLAKE3 blobs remain readable",
                 "remote_url_deduplication":false, "git_object_scope":"daemon", "git_object_key":"Git SHA-1 of typed raw object",
-                "new_workspace":"One workspace record and one empty revision; reuses an imported base manifest for the same repository ID and commit",
+                "new_workspace":"One workspace record and one empty revision referencing the shared Git commit; file paths resolve lazily without copying or enumerating the source",
                 "fork":"One workspace record pointing to the existing immutable revision; copies no manifest or content"
             },
             "accounting_notes":[

@@ -633,8 +633,8 @@ fn v19_storage_sharing() -> Result<()> {
     assert_eq!(tool["annotations"]["readOnlyHint"], true);
     let info = || f.engine.call("storage_info", &json!({}));
     let before = info()?;
-    assert_eq!(before["base_manifests"], 1);
-    assert_eq!(before["base_entries"], 3);
+    assert_eq!(before["base_manifests"], 0);
+    assert_eq!(before["base_entries"], 0);
     assert_eq!(before["blobs"], 0);
     let reply = protocol::mcp_response(
         &json!({"id":1,"method":"tools/call",
@@ -678,15 +678,15 @@ fn v19_storage_sharing() -> Result<()> {
         twice["compressed_blob_bytes"],
         edited["compressed_blob_bytes"]
     );
-    // Registration identity, not a URL or object-store path, scopes base manifests.
+    // Registrations share Git objects without duplicating their path manifests.
     f.engine
         .call("repo_register", &json!({"repo":"alias","path":f.root}))?;
     f.engine.call(
         "workspace_create",
         &json!({"repo":"alias","workspace":"alias-one"}),
     )?;
-    assert_eq!(info()?["base_manifests"], 2);
-    assert_eq!(info()?["base_entries"], 6);
+    assert_eq!(info()?["base_manifests"], 0);
+    assert_eq!(info()?["base_entries"], 0);
     f.write("alias-one", "README.md", "shared edited content");
     assert_eq!(
         info()?["blobs"],
@@ -1998,5 +1998,85 @@ fn v33_first_import_batch_uses_git_deltas() -> Result<()> {
         }
     }
     assert!(deltas >= 8, "first batch must use Git deltas: {deltas}");
+    Ok(())
+}
+
+#[test]
+fn v38_workspace_creation_and_point_reads_do_not_enumerate_base() -> Result<()> {
+    let f = Fixture::new();
+    let unrelated = git(&f.root, &["rev-parse", "HEAD:binary.dat"]);
+    // Make an unrelated header unreadable: an eager tree walk would fail.
+    let transaction = f.engine.db.begin_write()?;
+    transaction
+        .open_table(vwork::git_store::HEADERS)?
+        .insert(unrelated.as_str(), b"fixture unavailable header".as_slice())?;
+    transaction.commit()?;
+    std::fs::rename(&f.root, f.root.with_extension("offline"))?;
+    f.engine.call(
+        "workspace_create",
+        &json!({"repo":"repo","workspace":"lazy"}),
+    )?;
+    assert_eq!(f.read("lazy", "README.md"), "base");
+    assert!(
+        f.engine
+            .call("files_read", &json!({"workspace":"lazy","path":"missing"}))
+            .is_err()
+    );
+    let stats = f.engine.call("storage_info", &json!({}))?;
+    assert_eq!(stats["base_entries"], 0);
+    assert_eq!(stats["base_manifests"], 0);
+    assert!(
+        f.engine
+            .call("files_list", &json!({"workspace":"lazy"}))
+            .is_err(),
+        "Full enumeration must encounter the unavailable unrelated header"
+    );
+    Ok(())
+}
+
+#[test]
+fn v38_lazy_paths_preserve_overlays_tombstones_and_legacy_manifests() -> Result<()> {
+    let f = Fixture::new();
+    let ws = f.engine.workspace("one")?;
+    let revision = f.engine.revision(&ws.head)?;
+    let tree = vwork::git::tree(&f.engine.db, &f.engine.repo("repo")?, &revision.base)?;
+    // A prior-version manifest must remain readable without re-importing it.
+    let table = vwork::kv::TableDefinition::<&str, &[u8]>::new("records_v1");
+    let tx = f.engine.db.begin_write()?;
+    {
+        let mut records = tx.open_table(table)?;
+        for (path, entry) in &tree {
+            records.insert(
+                format!("t/repo/{}/{path}", revision.base).as_str(),
+                serde_json::to_vec(entry)?.as_slice(),
+            )?;
+        }
+        records.insert(
+            format!("m/repo/{}", revision.base).as_str(),
+            b"true".as_slice(),
+        )?;
+    }
+    tx.commit()?;
+    assert_eq!(
+        f.engine.call("files_list", &json!({"workspace":"one"}))?["total"],
+        3
+    );
+    f.engine.call(
+        "workspace_fork",
+        &json!({"workspace":"one","name":"sibling"}),
+    )?;
+    f.write("one", "README.md", "edited");
+    assert_eq!(f.read("one", "README.md"), "edited");
+    assert_eq!(f.read("sibling", "README.md"), "base");
+    f.engine.call(
+        "files_delete",
+        &json!({"workspace":"one","path":"README.md","expected_revision":f.head("one")}),
+    )?;
+    assert!(
+        f.engine
+            .call("files_read", &json!({"workspace":"one","path":"README.md"}))
+            .is_err()
+    );
+    assert_eq!(f.read("sibling", "README.md"), "base");
     Ok(())
 }

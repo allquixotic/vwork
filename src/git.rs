@@ -268,6 +268,36 @@ pub fn tree(db: &Arc<Database>, repo: &Repository, commit: &str) -> Result<Tree>
     Ok(result)
 }
 
+/// Resolve one path in the immutable Git tree, without walking sibling trees
+/// or reading every blob header. All objects come from the shared database.
+pub fn entry(
+    db: &Arc<Database>,
+    repo: &Repository,
+    commit: &str,
+    path: &str,
+) -> Result<Option<Entry>> {
+    let repository = open(db, repo, 3)?;
+    let root = repository.find_commit(Oid::from_str(commit)?)?.tree()?;
+    let entry = match root.get_path(Path::new(path)) {
+        Ok(entry) => entry,
+        Err(e) if e.code() == git2::ErrorCode::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if entry.kind() == Some(ObjectType::Tree) {
+        return Ok(None);
+    }
+    Ok(Some(Entry {
+        source: "git".into(),
+        oid: entry.id().to_string(),
+        mode: format!("{:06o}", entry.filemode()),
+        size: if entry.kind() == Some(ObjectType::Blob) {
+            repository.odb()?.read_header(entry.id())?.0 as u64
+        } else {
+            0
+        },
+    }))
+}
+
 pub struct Reader {
     db: Arc<Database>,
     repo: String,
