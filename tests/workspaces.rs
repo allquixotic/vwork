@@ -125,7 +125,9 @@ fn v25_crash_writer_child() -> Result<()> {
         table.insert("committed", "must survive sudden termination")?;
     }
     tx.commit()?;
-    // Process exit skips Database::drop, like termination after an acknowledged commit.
+    engine.db.persist()?;
+    // Process exit skips Database::drop after an explicitly durable save.
+    // Ordinary buffered commits may be lost within the authorized 60s window.
     std::process::exit(0);
 }
 

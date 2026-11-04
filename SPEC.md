@@ -153,3 +153,5 @@ B39|2026-11-04|New shared Git edit namespace removed legacy blob-to-Git promotio
 B40|2026-11-04|Concurrent first imports could blindly overwrite different encodings of the same Git object and make opposite delta links cyclic|V35; conflict-check first publication, preserve immutable published bases, overlapping-import regression
 
 B41|2026-11-04|Fjall full-value get/iteration inflated object bodies for Git headers, dedup existence and GC key scans|V36; separate atomic immutable header/base metadata, use key-only guards and delete without previous-value fetch; payload-independent header regression
+
+B42|2026-11-04|V25 crash fixture assumed every ordinary commit immediately durable, conflicting with newly authorized 60s buffering|Explicit save barrier before crash assertion; retain V25 corruption preservation and new V37 real periodic/explicit kill tests
