@@ -69,7 +69,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 # §T
 id|status|task|cites
 ---|---|---|---
-T21|~|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
+T21|x|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
 T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,V36,I.storage
 T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V2,V3,V4,V5,I.storage
 T2|x|Git export, merges, managed tasks and materialization|V4,V5,V6,V7,I.cli
