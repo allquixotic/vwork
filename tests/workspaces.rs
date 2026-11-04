@@ -2022,9 +2022,12 @@ fn v38_workspace_creation_and_point_reads_do_not_enumerate_base() -> Result<()> 
             .call("files_read", &json!({"workspace":"lazy","path":"missing"}))
             .is_err()
     );
-    let stats = f.engine.call("storage_info", &json!({}))?;
-    assert_eq!(stats["base_entries"], 0);
-    assert_eq!(stats["base_manifests"], 0);
+    let read = f.engine.db.begin_read()?;
+    let records = read.open_table(vwork::kv::TableDefinition::<&str, &[u8]>::new("records_v1"))?;
+    for row in records.iter()? {
+        let (key, _) = row?;
+        assert!(!key.value().starts_with("t/") && !key.value().starts_with("m/"));
+    }
     assert!(
         f.engine
             .call("files_list", &json!({"workspace":"lazy"}))

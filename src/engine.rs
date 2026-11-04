@@ -1909,7 +1909,7 @@ impl Engine {
                 "Record byte counts are serialized keys/values, not physical allocation per workspace",
                 "Database bytes include journals, indexes and compressed segments; legacy compressed_* counters now report logical bytes",
                 "Temporary copies, exports and package caches are outside these database sizes; Git objects are included",
-                "Different repository registrations have separate base manifests, even for the same path or remote URL"
+                "Legacy registrations may retain separate base manifests; new workspaces share Git trees without a duplicate path index"
             ]
         }))
     }
