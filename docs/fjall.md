@@ -26,7 +26,9 @@ Delta selection uses a bounded candidate index and a transaction-local cache.
 Candidate entries and repository membership are independent append-only keys;
 ordinary writes do not update a shared reference count, object count, or pack
 manifest. Private Git refs have individual keys rather than rewriting one
-repository record for every conversation. Different workspace heads and thread
+repository record for every conversation. First publication of a new Git object
+checks for a competing publisher; existing encodings remain immutable so
+concurrent imports cannot create delta cycles. Different workspace heads and thread
 summary generations have independent conflict domains. Same-workspace stale
 writes still fail the revision guard. Fjall briefly coordinates commits and
 journal durability; concurrent preparation does not imply parallel disk fsyncs.
@@ -81,7 +83,7 @@ write failure retains raw in-memory content rather than losing the transcript.
 
 The vwork suite covers overlapping transaction preparation, revision conflicts,
 Git delta round trips/depth bounds, cross-repository delta roots, dead overlay
-collection, first-batch imports, interrupted migrations, dirty legacy recovery,
+collection, first-batch imports, competing object publication, interrupted migrations, dirty legacy recovery,
 source preservation, and refusal to overwrite live stores. Fastrock adds native
 migration controls and regressions for summaries, memories, checkpoints,
 scrollback, and multiple streaming conversations. Native tests run on `games`;

@@ -59,10 +59,12 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 - V33: Committed Git trees ! retain overlay object membership after virtual revision unpin; verify `export_retention`.  Git objects ! raw or standard Git copy/insert deltas, hash-verified reconstruction, bounded depth/bytes, base reachability through GC; no application entropy codec on new writes. Tests `v33_delta_roundtrip_bounds`, `v33_overlay_gc_preserves_shared_bases_and_reclaims_dead_edits`, `v33_first_import_batch_uses_git_deltas`, `v33_corrupt_delta_fails_closed`.
 - V34: Legacy redb ! source preserved, bounded resumable migration, all known Fastrock/vwork tables transferred with original keys and decoded values; unknown types/corruption ! fail closed. Destination activated only after complete validation and durable marker; normal startup ! no repeat scan. Tests `v34_automatic_migration_preserves_source_and_reopens_without_source`, `v34_copy_and_delta_repack_resume_after_cancellation`, `v34_bad_locked_changed_and_existing_destinations_fail_closed`, `v34_dirty_legacy_repairs_only_private_copy`.
 
+- V35: Published Git encodings ! immutable outside exclusive migration; competing first publication ! OCC read-before-insert, never blind overwrite. Delta bases keep encoding/depth across concurrent imports. Test `v35_duplicate_publication_cannot_rewrite_a_delta_base`.
+
 # §T
 id|status|task|cites
 ---|---|---|---
-T20|~|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,I.storage
+T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,I.storage
 T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V2,V3,V4,V5,I.storage
 T2|x|Git export, merges, managed tasks and materialization|V4,V5,V6,V7,I.cli
 T3|x|Daemon, CLI, MCP, policy hook, Goose generator|V8,I.rpc,I.goose
@@ -141,3 +143,5 @@ B37|2026-11-04|Initial Fjall adapter used keyspace iteration absent from transac
 B38|2026-11-04|Compression acceptance compared total Fjall bytes with payload size, counting its preallocated 64 MiB active journal as data|V32,V33; assert compressed keyspace bytes separately and retain total directory accounting in benchmarks
 
 B39|2026-11-04|New shared Git edit namespace removed legacy blob-to-Git promotion during commit; GC then reclaimed blobs still referenced by retained Git commits|V33; promote membership without copying bytes, distinguish overlay revision roots from permanent history, retain export_retention regression
+
+B40|2026-11-04|Concurrent first imports could blindly overwrite different encodings of the same Git object and make opposite delta links cyclic|V35; conflict-check first publication, preserve immutable published bases, overlapping-import regression

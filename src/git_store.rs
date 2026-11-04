@@ -329,10 +329,16 @@ fn insert_prepared(
 ) -> Result<()> {
     let key = oid.to_string();
     if let Some(record) = prepared {
-        tx.open_table(OBJECTS)?.insert(key.as_str(), record)?;
-        for prefix in candidate_prefixes(kind, bytes) {
-            tx.open_table(CANDIDATES)?
-                .insert(format!("{prefix}{key}").as_str(), b"".as_slice())?;
+        // Only first publication reads this shared key into the conflict set.
+        // Two imports may prepare different delta encodings for the same OID;
+        // overwriting a published base could otherwise create a delta cycle.
+        let mut objects = tx.open_table(OBJECTS)?;
+        if objects.get(key.as_str())?.is_none() {
+            objects.insert(key.as_str(), record)?;
+            for prefix in candidate_prefixes(kind, bytes) {
+                tx.open_table(CANDIDATES)?
+                    .insert(format!("{prefix}{key}").as_str(), b"".as_slice())?;
+            }
         }
     }
     let member = format!("{repo}/{key}");
@@ -612,4 +618,39 @@ fn attach(odb: &Odb<'_>, db: Arc<Database>, repo: &str, level: i32, readonly: bo
         anyhow::bail!("attach Fjall Git backend");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v35_duplicate_publication_cannot_rewrite_a_delta_base() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let db = Database::open(&root.path().join("store"))?;
+        initialize(&db)?;
+        let a = "shared source line with stable content\n"
+            .repeat(2000)
+            .into_bytes();
+        let mut b = a.clone();
+        b[120..124].copy_from_slice(b"edit");
+        let a_id = Oid::hash_object(ObjectType::Blob, &a)?;
+        let b_id = Oid::hash_object(ObjectType::Blob, &b)?;
+        let older = db.begin_write()?;
+        write_record(&older, "first", a_id, ObjectType::Blob, &a, 0)?;
+        write_record(&older, "first", b_id, ObjectType::Blob, &b, 0)?;
+        // The first import has prepared A(raw), B(delta A), but has not committed.
+        // A second import publishes B(raw), then prepares A(delta B).
+        write(&db, "second", b_id, ObjectType::Blob, &b, 0)?;
+        let newer = db.begin_write()?;
+        write_record(&newer, "second", a_id, ObjectType::Blob, &a, 0)?;
+        // Blindly accepting both commits would leave A -> B -> A. The losing
+        // first-publication transaction must conflict, preserving B's encoding.
+        assert!(older.commit().unwrap_err().is::<crate::kv::Conflict>());
+        newer.commit()?;
+        assert_eq!(read(&db, a_id)?.1, a);
+        assert_eq!(read(&db, b_id)?.1, b);
+        assert_eq!(db.begin_read()?.open_table(OBJECTS)?.len()?, 2);
+        Ok(())
+    }
 }
