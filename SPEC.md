@@ -2,6 +2,7 @@
 Provide compressed, isolated, persistent virtual workspaces for Goose without admin rights, symlinks, or per-agent full checkouts.
 
 # §C
+- 2026-11-04: ordinary changes may remain in RAM/OS buffers up to 60s; explicit durability barriers before confirmed saves, external-effect recovery intents and shutdown.
 - 2026-11-04 supersedes redb/Zstd clauses: latest stable Fjall 3.1.13, optimistic concurrent transactions, Fjall-owned LZ4; application only Git delta encoding. Legacy redb decoding migration-only; preserve original and validate before activation.
 - Native Rust executables; git2/libgit2 handles Git objects, history, imports and clone transport. Git CLI only for explicitly configured tasks or credential helpers.
 - macOS and Windows supported. Publish binaries only for Windows x64, inside ZIP.
@@ -55,7 +56,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V31: Embedded open ! no expired-tree deletion; caller schedules reaping separately and retains changed-file recovery. Lock conflict ! ownership guidance, no corruption/backup advice or repair snapshot. Verify `v31_embedded_open_defers_cleanup_and_preserves_expired_edits`, `v31_lock_conflict_is_not_corruption`.
 
-- V32: Fjall 3.1.13 ! optimistic concurrent writers, durable atomic commits; raw content addressed once, per-workspace/per-conversation keys; no per-write shared counters/refcounts. Tests `v32_disjoint_writers_prepare_together_same_head_conflicts`, `v33_bulk_deltas_dedup_bounds_and_reopen`.
+- V32: Fjall 3.1.13 ! optimistic concurrent writers, atomic commits with V37 durability; raw content addressed once, per-workspace/per-conversation keys; no per-write shared counters/refcounts. Tests `v32_disjoint_writers_prepare_together_same_head_conflicts`, `v33_bulk_deltas_dedup_bounds_and_reopen`.
 - V33: Committed Git trees ! retain overlay object membership after virtual revision unpin; verify `export_retention`.  Git objects ! raw or standard Git copy/insert deltas, hash-verified reconstruction, bounded depth/bytes, base reachability through GC; no application entropy codec on new writes. Tests `v33_delta_roundtrip_bounds`, `v33_overlay_gc_preserves_shared_bases_and_reclaims_dead_edits`, `v33_first_import_batch_uses_git_deltas`, `v33_corrupt_delta_fails_closed`.
 - V34: Legacy redb ! source preserved, bounded resumable migration, all known Fastrock/vwork tables transferred with original keys and decoded values; unknown types/corruption ! fail closed. Destination activated only after complete validation and durable marker; normal startup ! no repeat scan. Tests `v34_automatic_migration_preserves_source_and_reopens_without_source`, `v34_copy_and_delta_repack_resume_after_cancellation`, `v34_bad_locked_changed_and_existing_destinations_fail_closed`, `v34_dirty_legacy_repairs_only_private_copy`.
 
@@ -63,9 +64,12 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V36: Git header/size, dedup existence and GC reachability ! small immutable metadata; key scans/counts/deletes ! no payload fetch. Metadata/payload publish atomically; reconstruction verifies consistency. Test `v36_headers_and_key_scans_do_not_load_object_payloads`.
 
+- V37: Buffered commits ! RAM journal, background OS flush 1s, durable sync 30s target with 60s healthy-storage limit, oldest write deadline never debounced. Dedicated worker; failed/overdue sync rejects new writes. Explicit barrier/shutdown preserves acknowledged durable writes; migration/lease intents remain immediate. Tests `v37_continuous_writes_do_not_debounce_sync_and_racing_writes_stay_dirty`, `v37_sync_failure_keeps_pending_data_and_rejects_new_writes`, `v37_idle_worker_syncs_one_write_without_another_operation`, `v37_periodic_sync_survives_process_kill_within_sixty_seconds`, `v37_explicit_save_survives_process_kill`.
+
 # §T
 id|status|task|cites
 ---|---|---|---
+T21|~|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
 T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,V36,I.storage
 T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V2,V3,V4,V5,I.storage
 T2|x|Git export, merges, managed tasks and materialization|V4,V5,V6,V7,I.cli

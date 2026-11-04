@@ -11,6 +11,8 @@ use std::{
 };
 
 pub use fjall;
+mod journal;
+pub use journal::{DURABILITY_LIMIT, Status as DurabilityStatus, statuses as durability_statuses};
 
 pub trait Codec {
     type Input<'a>: Copy;
@@ -106,16 +108,19 @@ impl<T: Codec> AccessGuard<T> {
 
 pub struct Database {
     pub(crate) inner: OptimisticTxDatabase,
+    journal: journal::Journal,
 }
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         let inner = OptimisticTxDatabase::builder(path)
+            .manual_journal_persist(true)
             .cache_size(64 * 1024 * 1024)
             .max_journaling_size(128 * 1024 * 1024)
             .journal_compression(fjall::CompressionType::Lz4)
             .worker_threads(2)
             .open()?;
-        Ok(Self { inner })
+        let journal = journal::Journal::start(inner.clone())?;
+        Ok(Self { inner, journal })
     }
     pub(crate) fn keyspace(&self, name: &str) -> Result<OptimisticTxKeyspace> {
         Ok(self.inner.keyspace(name, || {
@@ -141,21 +146,22 @@ impl Database {
         })
     }
     pub fn begin_write(&self) -> Result<WriteTransaction<'_>> {
+        self.journal.check_write()?;
         Ok(WriteTransaction {
             db: self,
+            immediate: false,
             git_batch: RefCell::new(Default::default()),
-            inner: RefCell::new(Some(
-                self.inner
-                    .write_tx()?
-                    .durability(Some(fjall::PersistMode::SyncAll)),
-            )),
+            inner: RefCell::new(Some(self.inner.write_tx()?.durability(None))),
         })
     }
     pub fn disk_space(&self) -> Result<u64> {
         Ok(self.inner.disk_space()?)
     }
     pub fn persist(&self) -> Result<()> {
-        Ok(self.inner.persist(fjall::PersistMode::SyncAll)?)
+        self.journal.persist(&self.inner)
+    }
+    pub fn durability_status(&self) -> DurabilityStatus {
+        self.journal.status()
     }
     pub fn compact(&self) -> Result<()> {
         self.persist()?;
@@ -181,6 +187,15 @@ impl Database {
             }
         }
         unreachable!()
+    }
+}
+impl Drop for Database {
+    fn drop(&mut self) {
+        // Explicit shutdown calls persist and reports errors. Drop is also a
+        // final best-effort barrier for CLI/tests and exceptional teardown.
+        if let Err(error) = self.persist() {
+            eprintln!("Workspace shutdown sync failed: {error}");
+        }
     }
 }
 
@@ -222,6 +237,7 @@ pub enum Durability {
 }
 pub struct WriteTransaction<'a> {
     db: &'a Database,
+    immediate: bool,
     pub(crate) git_batch: RefCell<crate::git_store::GitBatch>,
     inner: RefCell<Option<fjall::OptimisticWriteTx>>,
 }
@@ -240,19 +256,21 @@ impl WriteTransaction<'_> {
         })
     }
     pub fn set_durability(&mut self, durability: Durability) -> Result<()> {
-        let tx = self.inner.get_mut().take().expect("live transaction");
-        *self.inner.get_mut() = Some(tx.durability(Some(match durability {
-            Durability::None => fjall::PersistMode::Buffer,
-            Durability::Immediate => fjall::PersistMode::SyncAll,
-        })));
+        self.immediate = matches!(durability, Durability::Immediate);
         Ok(())
     }
     pub fn commit(self) -> Result<()> {
+        self.db.journal.check_write()?;
         self.inner
             .into_inner()
             .expect("live transaction")
             .commit()?
-            .map_err(|_| Conflict.into())
+            .map_err(|_| anyhow::Error::from(Conflict))?;
+        self.db.journal.committed();
+        if self.immediate {
+            self.db.persist()?;
+        }
+        Ok(())
     }
     pub fn abort(self) -> Result<()> {
         Ok(())
@@ -388,5 +406,77 @@ impl<K: Codec, V: Codec> DoubleEndedIterator for TableIter<K, V> {
             let (k, v) = guard.into_inner()?;
             Ok((AccessGuard::new(k)?, AccessGuard::new(v)?))
         })
+    }
+}
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+    use std::io::{BufRead, Write};
+    const DATA: TableDefinition<&str, &str> = TableDefinition::new("durability_fixture");
+
+    #[test]
+    fn v37_crash_writer_helper() {
+        let Some(path) = std::env::var_os("VWORK_JOURNAL_CRASH_PATH") else {
+            return;
+        };
+        let db = Database::open(Path::new(&path)).unwrap();
+        let mut tx = db.begin_write().unwrap();
+        let immediate = std::env::var("VWORK_JOURNAL_CRASH_MODE").unwrap() == "immediate";
+        if immediate {
+            tx.set_durability(Durability::Immediate).unwrap();
+        }
+        tx.open_table(DATA)
+            .unwrap()
+            .insert("key", "saved content")
+            .unwrap();
+        tx.commit().unwrap();
+        let start = std::time::Instant::now();
+        while db.durability_status().pending_transactions != 0 {
+            assert!(
+                start.elapsed() < DURABILITY_LIMIT,
+                "real periodic sync missed deadline"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        println!("JOURNAL_DURABLE_READY");
+        std::io::stdout().flush().unwrap();
+        // Parent forcibly terminates this process: neither Database nor Fjall
+        // Drop can make the test accidentally pass by syncing on clean close.
+        std::thread::sleep(std::time::Duration::from_secs(90));
+        std::process::exit(3);
+    }
+    fn crash_reopen(mode: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "kv::durability_tests::v37_crash_writer_helper",
+                "--nocapture",
+            ])
+            .env("VWORK_JOURNAL_CRASH_PATH", temp.path())
+            .env("VWORK_JOURNAL_CRASH_MODE", mode)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let ready = std::io::BufReader::new(child.stdout.take().unwrap())
+            .lines()
+            .map_while(std::result::Result::ok)
+            .any(|line| line.contains("JOURNAL_DURABLE_READY"));
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(ready, "child failed before durable barrier");
+        let reopened = Database::open(temp.path()).unwrap();
+        let read = reopened.begin_read().unwrap();
+        let table = read.open_table(DATA).unwrap();
+        assert_eq!(table.get("key").unwrap().unwrap().value(), "saved content");
+    }
+    #[test]
+    fn v37_periodic_sync_survives_process_kill_within_sixty_seconds() {
+        crash_reopen("periodic");
+    }
+    #[test]
+    fn v37_explicit_save_survives_process_kill() {
+        crash_reopen("immediate");
     }
 }

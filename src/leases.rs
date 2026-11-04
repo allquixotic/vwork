@@ -47,7 +47,9 @@ impl Engine {
             .collect()
     }
     pub(crate) fn lease_save(&self, lease: &Lease) -> Result<()> {
-        self.put(&format!("lease/{}", lease.id), lease)
+        self.put(&format!("lease/{}", lease.id), lease)?;
+        // External temporary directories need durable ownership/recovery state.
+        self.db.persist()
     }
     fn ttl(&self, value: &Value) -> Result<u64> {
         let ttl = value["ttl_seconds"]
@@ -326,6 +328,7 @@ impl Engine {
             table.remove(format!("lease/{}", lease.id).as_str())?;
         }
         tx.commit()?;
+        self.db.persist()?;
         Ok(result)
     }
     /// Adopt only legacy build directories whose existing vwork marker proves
