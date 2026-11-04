@@ -1951,6 +1951,20 @@ fn v33_overlay_gc_preserves_shared_bases_and_reclaims_dead_edits() -> Result<()>
     assert!(git_store::read(&f.engine.db, base_id).is_err());
     let tx = f.engine.db.begin_read()?;
     assert!(
+        tx.open_table(git_store::HEADERS)?
+            .get(edited_id.to_string().as_str())?
+            .is_none()
+    );
+    assert!(
+        tx.open_table(git_store::HEADERS)?
+            .get(base_id.to_string().as_str())?
+            .is_none()
+    );
+    assert_eq!(
+        tx.open_table(git_store::HEADERS)?.len()?,
+        tx.open_table(git_store::OBJECTS)?.len()?
+    );
+    assert!(
         tx.open_table(TableDefinition::<&str, &[u8]>::new(
             "git_delta_candidates_v1"
         ))?

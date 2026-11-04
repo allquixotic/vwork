@@ -22,7 +22,13 @@ Delta ancestry is bounded to four levels; reconstruction verifies lengths and
 Git IDs. Garbage collection follows delta bases before removing unreachable
 objects. Unreferenced edits are reclaimable; imported history remains retained.
 
+Git headers, delta-base links and encoded lengths live in small immutable metadata
+records, published atomically with their payloads. Git size checks, deduplication,
+stats and GC inspect these records without inflating file contents. Key-only
+scans/counts and deletion likewise avoid fetching large values.
+
 Delta selection uses a bounded candidate index and a transaction-local cache.
+Both use size/sample fingerprints to skip unrelated files before encoding.
 Candidate entries and repository membership are independent append-only keys;
 ordinary writes do not update a shared reference count, object count, or pack
 manifest. Private Git refs have individual keys rather than rewriting one

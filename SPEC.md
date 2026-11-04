@@ -61,10 +61,12 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V35: Published Git encodings ! immutable outside exclusive migration; competing first publication ! OCC read-before-insert, never blind overwrite. Delta bases keep encoding/depth across concurrent imports. Test `v35_duplicate_publication_cannot_rewrite_a_delta_base`.
 
+- V36: Git header/size, dedup existence and GC reachability ! small immutable metadata; key scans/counts/deletes ! no payload fetch. Metadata/payload publish atomically; reconstruction verifies consistency. Test `v36_headers_and_key_scans_do_not_load_object_payloads`.
+
 # §T
 id|status|task|cites
 ---|---|---|---
-T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,I.storage
+T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,V36,I.storage
 T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V2,V3,V4,V5,I.storage
 T2|x|Git export, merges, managed tasks and materialization|V4,V5,V6,V7,I.cli
 T3|x|Daemon, CLI, MCP, policy hook, Goose generator|V8,I.rpc,I.goose
@@ -145,3 +147,5 @@ B38|2026-11-04|Compression acceptance compared total Fjall bytes with payload si
 B39|2026-11-04|New shared Git edit namespace removed legacy blob-to-Git promotion during commit; GC then reclaimed blobs still referenced by retained Git commits|V33; promote membership without copying bytes, distinguish overlay revision roots from permanent history, retain export_retention regression
 
 B40|2026-11-04|Concurrent first imports could blindly overwrite different encodings of the same Git object and make opposite delta links cyclic|V35; conflict-check first publication, preserve immutable published bases, overlapping-import regression
+
+B41|2026-11-04|Fjall full-value get/iteration inflated object bodies for Git headers, dedup existence and GC key scans|V36; separate atomic immutable header/base metadata, use key-only guards and delete without previous-value fetch; payload-independent header regression

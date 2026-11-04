@@ -1860,16 +1860,16 @@ impl Engine {
                     .to_owned(),
             );
         }
-        let git_objects = txn.open_table(git_store::OBJECTS)?;
+        let git_objects = txn.open_table(git_store::HEADERS)?;
         for oid in overlay_ids {
             if let Some(record) = git_objects.get(oid.as_str())? {
                 blobs += 1;
-                blob_bytes += record.value().len() as u64;
+                blob_bytes += git_store::encoded_len(record.value())?;
             }
         }
         let mut git_bytes = 0u64;
         for item in git_objects.iter()? {
-            git_bytes += item?.1.value().len() as u64;
+            git_bytes += git_store::encoded_len(item?.1.value())?;
         }
         Ok(json!({
             "git_objects":git_objects.len()?, "logical_git_bytes":git_bytes, "compressed_git_bytes":git_bytes,
@@ -1952,8 +1952,8 @@ impl Engine {
                 }
             }
             let mut remove = Vec::new();
-            for item in t.range("v/".."v0")? {
-                let (k, _) = item?;
+            for item in t.range_keys("v/".."v0")? {
+                let k = item?;
                 if !k.value().starts_with("v/") {
                     break;
                 }
@@ -1961,8 +1961,8 @@ impl Engine {
                     remove.push(k.value().to_string());
                 }
             }
-            for item in t.range("b/".."b0")? {
-                let (k, _) = item?;
+            for item in t.range_keys("b/".."b0")? {
+                let k = item?;
                 if !k.value().starts_with("b/") {
                     break;
                 }
@@ -1972,7 +1972,7 @@ impl Engine {
             }
             removed = remove.len();
             for k in remove {
-                t.remove(k.as_str())?;
+                t.delete(k.as_str())?;
             }
         }
         {
@@ -2011,9 +2011,10 @@ impl Engine {
                 overlays.remove(key.as_str())?;
             }
             let mut objects = txn.open_table(git_store::OBJECTS)?;
+            let mut headers = txn.open_table(git_store::HEADERS)?;
             let mut bases: Vec<_> = live.iter().cloned().collect();
             while let Some(oid) = bases.pop() {
-                let record = objects
+                let record = headers
                     .get(oid.as_str())?
                     .context("missing live Git object")?;
                 if let Some(base) = git_store::delta_base(record.value())? {
@@ -2024,14 +2025,15 @@ impl Engine {
                 }
             }
             let mut orphaned = Vec::new();
-            for item in objects.iter()? {
-                let (oid, _) = item?;
+            for item in objects.keys()? {
+                let oid = item?;
                 if !live.contains(oid.value()) {
                     orphaned.push(oid.value().to_string());
                 }
             }
             for oid in orphaned {
-                objects.remove(oid.as_str())?;
+                objects.delete(oid.as_str())?;
+                headers.delete(oid.as_str())?;
             }
             // Candidate keys are append-only on ordinary writes. Clean them
             // during the already-exclusive mark/sweep, never via a hot counter.

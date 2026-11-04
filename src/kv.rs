@@ -295,6 +295,12 @@ impl<K: Codec, V: Codec> Table<'_, K, V> {
     }
     pub fn remove(&mut self, key: K::Input<'_>) -> Result<Option<AccessGuard<V>>> {
         let previous = self.get(key)?;
+        self.delete(key)?;
+        Ok(previous)
+    }
+    /// Delete without fetching a potentially large value. Callers must hold
+    /// an exclusive lifecycle guard or otherwise not need a previous-value check.
+    pub fn delete(&mut self, key: K::Input<'_>) -> Result<()> {
         let Source::Write(tx) = &self.source else {
             anyhow::bail!("read-only transaction")
         };
@@ -302,10 +308,22 @@ impl<K: Codec, V: Codec> Table<'_, K, V> {
             .as_mut()
             .expect("live transaction")
             .remove(&self.space, K::encode(key));
-        Ok(previous)
+        Ok(())
     }
     pub fn iter(&self) -> Result<TableIter<K, V>> {
         self.range_bytes((Bound::Unbounded, Bound::Unbounded))
+    }
+    pub fn keys(&self) -> Result<KeyIter<K>> {
+        Ok(KeyIter {
+            inner: self.iter()?.inner,
+            types: PhantomData,
+        })
+    }
+    pub fn range_keys<'a>(&self, range: impl RangeBounds<K::Input<'a>>) -> Result<KeyIter<K>> {
+        Ok(KeyIter {
+            inner: self.range(range)?.inner,
+            types: PhantomData,
+        })
     }
     pub fn range<'a>(&self, range: impl RangeBounds<K::Input<'a>>) -> Result<TableIter<K, V>> {
         let encode = |bound: Bound<&K::Input<'a>>| match bound {
@@ -330,13 +348,25 @@ impl<K: Codec, V: Codec> Table<'_, K, V> {
         })
     }
     pub fn len(&self) -> Result<u64> {
-        self.iter()?.try_fold(0, |n, item| {
+        self.keys()?.try_fold(0, |n, item| {
             item?;
             Ok(n + 1)
         })
     }
     pub fn is_empty(&self) -> Result<bool> {
-        Ok(self.iter()?.next().transpose()?.is_none())
+        Ok(self.keys()?.next().transpose()?.is_none())
+    }
+}
+pub struct KeyIter<K: Codec> {
+    inner: fjall::Iter,
+    types: PhantomData<K>,
+}
+impl<K: Codec> Iterator for KeyIter<K> {
+    type Item = Result<AccessGuard<K>>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|guard| AccessGuard::new(guard.key()?))
     }
 }
 pub struct TableIter<K: Codec, V: Codec> {

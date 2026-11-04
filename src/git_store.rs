@@ -8,6 +8,7 @@ use libgit2_sys as raw;
 use std::{ffi::c_void, sync::Arc};
 
 pub const OBJECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_objects_v1");
+pub const HEADERS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_headers_v1");
 pub const OVERLAYS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_overlay_members_v1");
 pub const MEMBERS: TableDefinition<&str, &[u8]> = TableDefinition::new("git_members_v1");
 
@@ -15,7 +16,7 @@ pub fn initialize(db: &Database) -> Result<()> {
     let mut missing = false;
     {
         let tx = db.begin_read()?;
-        for table in [OBJECTS, MEMBERS, OVERLAYS, CANDIDATES] {
+        for table in [OBJECTS, HEADERS, MEMBERS, OVERLAYS, CANDIDATES] {
             match tx.open_table(table) {
                 Ok(_) => {}
                 Err(crate::kv::TableError::TableDoesNotExist(_)) => missing = true,
@@ -28,6 +29,7 @@ pub fn initialize(db: &Database) -> Result<()> {
     }
     let tx = db.begin_write()?;
     tx.open_table(OBJECTS)?;
+    tx.open_table(HEADERS)?;
     tx.open_table(MEMBERS)?;
     tx.open_table(OVERLAYS)?;
     tx.open_table(CANDIDATES)?;
@@ -65,9 +67,32 @@ pub fn delta_base(data: &[u8]) -> Result<Option<Oid>> {
         _ => anyhow::bail!("unknown Git object representation"),
     }
 }
+/// Small immutable metadata stays in index blocks, separate from large values.
+/// It includes the delta base and encoded length, so header reads, deduplication,
+/// stats and GC never fetch or inflate object payloads just to inspect them.
+fn metadata(record: &[u8]) -> Result<Vec<u8>> {
+    let n = if delta_base(record)?.is_some() {
+        31
+    } else {
+        11
+    };
+    let mut value = record[..n].to_vec();
+    value.extend_from_slice(&(record.len() as u64).to_le_bytes());
+    Ok(value)
+}
+pub fn encoded_len(header: &[u8]) -> Result<u64> {
+    let n = if delta_base(header)?.is_some() {
+        31
+    } else {
+        11
+    };
+    ensure!(header.len() == n + 8, "invalid Git metadata length");
+    Ok(u64::from_le_bytes(header[n..].try_into()?))
+}
 pub fn read(db: &Database, oid: Oid) -> Result<(ObjectType, Vec<u8>)> {
     let tx = db.begin_read()?;
     let table = tx.open_table(OBJECTS)?;
+    let headers = tx.open_table(HEADERS)?;
     let mut chain = Vec::new();
     let mut current = oid;
     loop {
@@ -85,6 +110,14 @@ pub fn read(db: &Database, oid: Oid) -> Result<(ObjectType, Vec<u8>)> {
             .value()
             .to_vec();
         let base = delta_base(&record)?;
+        ensure!(
+            headers
+                .get(current.to_string().as_str())?
+                .context("Git metadata missing")?
+                .value()
+                == metadata(&record)?,
+            "Git metadata mismatch"
+        );
         chain.push((current, record));
         if let Some(base) = base {
             current = base;
@@ -160,6 +193,10 @@ impl GitBatch {
             .push_back((oid, kind, record[10], bytes.to_vec()));
     }
     fn improve(&self, kind: ObjectType, bytes: &[u8], best: &mut Vec<u8>) {
+        let hints = candidate_prefixes(kind, bytes);
+        if hints.is_empty() {
+            return;
+        }
         for (base, base_kind, depth, source) in self
             .candidates
             .iter()
@@ -168,6 +205,12 @@ impl GitBatch {
             .take(4)
         {
             debug_assert_eq!(kind, *base_kind);
+            if !candidate_prefixes(kind, source)
+                .iter()
+                .any(|hint| hints.contains(hint))
+            {
+                continue;
+            }
             improve(*base, *depth, source, bytes, best);
         }
     }
@@ -211,7 +254,7 @@ fn prepare(db: &Database, oid: Oid, kind: ObjectType, bytes: &[u8]) -> Result<Op
     );
     let tx = db.begin_read()?;
     if tx
-        .open_table(OBJECTS)?
+        .open_table(HEADERS)?
         .get(oid.to_string().as_str())?
         .is_some()
     {
@@ -232,7 +275,7 @@ fn prepare_encoding(db: &Database, kind: ObjectType, bytes: &[u8]) -> Result<Vec
                 if !tested.insert(base) || tested.len() > 6 {
                     continue;
                 }
-                let Some(record) = tx.open_table(OBJECTS)?.get(base.to_string().as_str())? else {
+                let Some(record) = tx.open_table(HEADERS)?.get(base.to_string().as_str())? else {
                     continue;
                 };
                 let data = record.value();
@@ -265,11 +308,34 @@ pub fn repack(db: &Database, mut progress: impl FnMut() -> Result<()>) -> Result
             .get(done.as_str())?
             .is_some()
         {
+            // Older interrupted staging may already have its encoding marker.
+            // Fill metadata without choosing a new encoding for an existing base.
+            if db
+                .begin_read()?
+                .open_table(HEADERS)?
+                .get(key.value())?
+                .is_none()
+            {
+                db.transaction(|tx| {
+                    tx.open_table(HEADERS)?
+                        .insert(key.value(), &metadata(record.value())?)
+                })?;
+            }
             progress()?;
             continue;
         }
         let data = record.value();
-        let (kind, bytes) = read(db, oid)?;
+        // A copied raw record has no metadata yet. Existing encoded records
+        // were published by an earlier committed repack batch.
+        let (kind, bytes) = if data[9] == 0 {
+            (
+                ObjectType::from_raw(data[0] as raw::git_object_t)
+                    .context("invalid object type")?,
+                data[11..].to_vec(),
+            )
+        } else {
+            read(db, oid)?
+        };
         let mut replacement = if data[9] == 0 {
             prepare_encoding(db, kind, &bytes)?
         } else {
@@ -290,6 +356,9 @@ pub fn repack(db: &Database, mut progress: impl FnMut() -> Result<()>) -> Result
         batch
             .open_table(OBJECTS)?
             .insert(key.value(), &replacement)?;
+        batch
+            .open_table(HEADERS)?
+            .insert(key.value(), &metadata(&replacement)?)?;
         for prefix in candidate_prefixes(kind, &bytes) {
             batch
                 .open_table(CANDIDATES)?
@@ -332,9 +401,15 @@ fn insert_prepared(
         // Only first publication reads this shared key into the conflict set.
         // Two imports may prepare different delta encodings for the same OID;
         // overwriting a published base could otherwise create a delta cycle.
-        let mut objects = tx.open_table(OBJECTS)?;
-        if objects.get(key.as_str())?.is_none() {
+        let mut headers = tx.open_table(HEADERS)?;
+        if headers.get(key.as_str())?.is_none() {
+            let mut objects = tx.open_table(OBJECTS)?;
+            ensure!(
+                objects.get(key.as_str())?.is_none(),
+                "Git object metadata missing; existing payload preserved"
+            );
             objects.insert(key.as_str(), record)?;
+            headers.insert(key.as_str(), &metadata(record)?)?;
             for prefix in candidate_prefixes(kind, bytes) {
                 tx.open_table(CANDIDATES)?
                     .insert(format!("{prefix}{key}").as_str(), b"".as_slice())?;
@@ -396,7 +471,7 @@ pub(crate) fn retain_objects(
 ) -> Result<()> {
     let read = db.begin_read()?;
     let members = read.open_table(MEMBERS)?;
-    let objects = read.open_table(OBJECTS)?;
+    let objects = read.open_table(HEADERS)?;
     let mut retain = std::collections::BTreeSet::new();
     for oid in oids {
         let key = format!("{repo}/{oid}");
@@ -509,15 +584,22 @@ extern "C" fn header_cb(
             return Ok(raw::GIT_ENOTFOUND);
         }
         let tx = b.db.begin_read()?;
-        let table = tx.open_table(OBJECTS)?;
+        let table = tx.open_table(HEADERS)?;
         let Some(value) = table.get(id.to_string().as_str())? else {
             return Ok(raw::GIT_ENOTFOUND);
         };
         let data = value.value();
-        ensure!(data.len() >= 9, "invalid Git object record");
+        encoded_len(data)?;
+        let object_type =
+            ObjectType::from_raw(data[0] as raw::git_object_t).context("invalid object type")?;
+        let object_len = usize::try_from(u64::from_le_bytes(data[1..9].try_into()?))?;
+        ensure!(
+            object_len <= crate::git_delta::MAX_OBJECT_BYTES,
+            "Git object exceeds decoding limit"
+        );
         unsafe {
-            *len = usize::try_from(u64::from_le_bytes(data[1..9].try_into()?))?;
-            *kind = data[0] as raw::git_object_t;
+            *len = object_len;
+            *kind = object_type.raw();
         }
         Ok(0)
     })
@@ -623,6 +705,41 @@ fn attach(odb: &Odb<'_>, db: Arc<Database>, repo: &str, level: i32, readonly: bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v36_headers_and_key_scans_do_not_load_object_payloads() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let db = Arc::new(Database::open(&root.path().join("store"))?);
+        initialize(&db)?;
+        let bytes = vec![42; 1024 * 1024];
+        let oid = Oid::hash_object(ObjectType::Blob, &bytes)?;
+        write(&db, "repo", oid, ObjectType::Blob, &bytes, 0)?;
+        // Deliberately incompatible value codec proves key-only scans/counts
+        // do not retrieve or decode values. Fjall's key guard skips blob reads.
+        let keys_only: TableDefinition<&str, bool> = TableDefinition::new(OBJECTS.name());
+        let tx = db.begin_read()?;
+        let table = tx.open_table(keys_only)?;
+        assert_eq!(table.len()?, 1);
+        assert_eq!(table.keys()?.next().unwrap()?.value(), oid.to_string());
+        assert!(table.get(oid.to_string().as_str()).is_err());
+        drop(table);
+        drop(tx);
+        db.transaction(|tx| tx.open_table(OBJECTS)?.delete(oid.to_string().as_str()))?;
+        // A fresh libgit2 ODB has no cached header. Metadata remains readable
+        // even when the payload is unavailable; actual object reads fail closed.
+        let odb = Odb::new()?;
+        attach_readonly(&odb, db.clone(), "repo")?;
+        assert_eq!(odb.read_header(oid)?, (bytes.len(), ObjectType::Blob));
+        assert!(read(&db, oid).is_err());
+        let header = db
+            .begin_read()?
+            .open_table(HEADERS)?
+            .get(oid.to_string().as_str())?
+            .unwrap();
+        assert_eq!(header.value().len(), 19);
+        assert_eq!(encoded_len(header.value())?, bytes.len() as u64 + 11);
+        Ok(())
+    }
 
     #[test]
     fn v35_duplicate_publication_cannot_rewrite_a_delta_base() -> Result<()> {
