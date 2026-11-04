@@ -92,15 +92,24 @@ pub fn open(path: &Path) -> Result<(Database, Value)> {
             let backup = snapshot(path)?;
             eprintln!("Database was not cleanly closed; recovering from committed redb state");
             let mut builder = Database::builder();
-            builder.set_repair_callback(|session| eprintln!("Database recovery: {:.0}%", session.progress() * 100.0));
+            builder.set_repair_callback(|session| {
+                eprintln!("Database recovery: {:.0}%", session.progress() * 100.0)
+            });
             let db = builder.open(path).with_context(|| format!(
                 "database repair failed; original retained at {}, recovery snapshot at {}; restore a verified backup",
                 path.display(), backup.display()))?;
             (db, backup)
         }
-        Err(error) => return Err(error).with_context(|| format!(
-            "database could not be opened; preserved {}; no replacement database was created; restore a verified backup",
-            path.display())),
+        Err(DatabaseError::DatabaseAlreadyOpen) => anyhow::bail!(
+            "Workspace database is already in use by another running instance: {}. Use the existing Fastrock tray window, or explicitly Quit the other instance before retrying. The database has not been changed; this lock error does not call for restoring a backup.",
+            path.display()
+        ),
+        Err(error) => return Err(error).with_context(|| {
+            format!(
+                "database could not be opened; preserved {}; no replacement database was created",
+                path.display()
+            )
+        }),
     };
     eprintln!("Checking database integrity before serving requests...");
     db.check_integrity().with_context(|| format!(
@@ -120,6 +129,26 @@ pub fn open(path: &Path) -> Result<(Database, Value)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v31_lock_conflict_is_not_corruption() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("workspaces.redb");
+        let (owner, _) = open(&path)?;
+        let before = std::fs::metadata(&path)?.len();
+        let error = match open(&path) {
+            Ok(_) => panic!("duplicate database owner"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains("already in use"), "{error}");
+        assert!(!error.contains("restore a verified backup"), "{error}");
+        assert_eq!(std::fs::metadata(&path)?.len(), before);
+        assert!(!path.with_extension("redb.recovery.partial").exists());
+        drop(owner);
+        let (_, report) = open(&path)?;
+        assert_eq!(report["state"], "clean");
+        Ok(())
+    }
 
     #[test]
     fn v30_clean_open_preserves_recovery_evidence_without_snapshot() -> Result<()> {

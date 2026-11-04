@@ -1454,7 +1454,16 @@ fn v22_temporary_lifecycle() -> Result<()> {
 }
 
 #[test]
+fn v31_embedded_open_defers_cleanup_and_preserves_expired_edits() -> Result<()> {
+    temporary_recovery(true)
+}
+
+#[test]
 fn v22_temporary_recovery() -> Result<()> {
+    temporary_recovery(false)
+}
+
+fn temporary_recovery(embedded: bool) -> Result<()> {
     let f = Fixture::new();
     let lease = f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"edit with external tool","ttl_seconds":1}))?;
     let root = PathBuf::from(lease["path"].as_str().unwrap());
@@ -1468,7 +1477,21 @@ fn v22_temporary_recovery() -> Result<()> {
     } = f;
     drop(engine);
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    let reopened = Engine::open(home, Config::default())?;
+    let reopened = if embedded {
+        let engine = Engine::open_embedded(&home, Config::default())?;
+        assert!(
+            root.exists(),
+            "embedded startup must not reap materializations"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("new.txt"))?,
+            "recover new file"
+        );
+        engine.reap_temporary()?;
+        engine
+    } else {
+        Engine::open(&home, Config::default())?
+    };
     assert!(!root.exists(), "expired copies are reclaimed after restart");
     let history = reopened.call("temporary_list", &json!({}))?;
     let recovery = &history["recent"][0]["recovery_workspace"];

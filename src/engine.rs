@@ -57,6 +57,15 @@ fn bool_arg(a: &Value, field: &str) -> bool {
 
 impl Engine {
     pub fn open(home: impl AsRef<Path>, config: Config) -> Result<Self> {
+        let engine = Self::open_embedded(home, config)?;
+        engine.reap_temporary()?;
+        Ok(engine)
+    }
+
+    /// Open storage without deleting expired materializations. Embedded callers
+    /// schedule that maintenance separately: removing a large build tree must
+    /// never delay every conversation waiting for the shared database owner.
+    pub fn open_embedded(home: impl AsRef<Path>, config: Config) -> Result<Self> {
         config.validate()?;
         std::fs::create_dir_all(home.as_ref())?;
         let home = home.as_ref().canonicalize()?;
@@ -98,7 +107,6 @@ impl Engine {
         };
         engine.migrate_repositories()?;
         engine.migrate_legacy_copies()?;
-        engine.reap_temporary()?;
         Ok(engine)
     }
 

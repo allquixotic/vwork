@@ -52,6 +52,8 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V30: Clean open ! redb header/allocator validation without whole-file snapshot or integrity scrub; retain prior recovery evidence and avoid unchanged schema/table commits. Repair required ! snapshot before repair, full integrity check before serving; empty/corrupt files ! preserve fail-closed V25. Tests `v30_clean_open_preserves_recovery_evidence_without_snapshot`, V25 crash/corruption regressions and large-store I/O acceptance.
 
+- V31: Embedded open ! no expired-tree deletion; caller schedules reaping separately and retains changed-file recovery. Lock conflict ! ownership guidance, no corruption/backup advice or repair snapshot. Verify `v31_embedded_open_defers_cleanup_and_preserves_expired_edits`, `v31_lock_conflict_is_not_corruption`.
+
 # §T
 id|status|task|cites
 ---|---|---|---
@@ -125,3 +127,5 @@ B33|2026-10-29|Periodic cleanup test assumed removed tree implied durable lease 
 B34|2026-11-03|Every clean open copied/fsynced entire redb then ran full integrity scan; embedded transient owners multiplied gigabytes of IO|Abort-on-repair probe first, full snapshot/check only when repair required; preserve earlier evidence and fail-closed corruption handling; V25,V30
 
 B35|2026-11-03|Cross-compiled package tests on games lacked Cargo and retained the Mac source path; 46/48 workspace tests and all storage/recovery/daemon/policy tests passed|Require native Windows/macOS CI package coverage; do not weaken fixture assertions; T19
+
+B36|2026-11-03|Embedded database open synchronously reaped expired trees; all open failures shared backup advice, including ownership conflicts|V31; separate embedded initialization from scheduled cleanup and classify lock conflicts without repair advice
