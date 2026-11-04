@@ -29,10 +29,12 @@ can use the installed Git credential helper; SSH uses the agent. No credentials
 are persisted in repository records. Existing registrations migrate before use;
 missing original stores produce a restoration instruction without deleting data.
 
-Base manifests are stored once per repository ID and commit. New workspaces reuse
-them; forks share an immutable revision. Different registrations may have separate
-manifests while sharing identical Git objects. New edits share by Git object ID; migrated legacy blobs share by BLAKE3.
-A cached persistent `im::OrdMap` shares in-memory path nodes across snapshots.
+New workspaces record a shared Git commit and an empty revision without walking
+files or writing a duplicate path manifest; forks share an immutable revision.
+Point reads resolve overlays and the requested Git path. Operations requiring a
+full tree build a shared, bounded `im::OrdMap` cache on demand. Status, diff and
+squash use that same base. Older per-repository manifests remain readable.
+New edits share by Git object ID; migrated legacy blobs share by BLAKE3.
 `storage_info` reports these scopes and counters without creating probe workspaces.
 Serialized record bytes are logical sizes; Fjall directory size includes compressed segments, journals and indexes. Temporary copies and deliberate durable exports are outside Fjall.
 

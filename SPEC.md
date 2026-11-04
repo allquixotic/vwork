@@ -66,12 +66,12 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V37: Buffered commits ! RAM journal, background OS flush 1s, durable sync 30s target with 60s healthy-storage limit, oldest write deadline never debounced. Dedicated worker; failed/overdue sync rejects new writes. Explicit barrier/shutdown preserves acknowledged durable writes; migration/lease intents remain immediate. Tests `v37_continuous_writes_do_not_debounce_sync_and_racing_writes_stay_dirty`, `v37_sync_failure_keeps_pending_data_and_rejects_new_writes`, `v37_idle_worker_syncs_one_write_without_another_operation`, `v37_periodic_sync_survives_process_kill_within_sixty_seconds`, `v37_explicit_save_survives_process_kill`.
 
-- V38: Workspace creation ! constant workspace/revision metadata referencing immutable Git commit, no tree walk or duplicate path manifest. Point reads ! only requested overlay/Git path; unrelated unavailable objects cannot block creation/read. Full enumeration ! lazy shared cache, prior manifests preserved; isolation/tombstones/guards unchanged. Tests `v38_workspace_creation_and_point_reads_do_not_enumerate_base`, `v38_lazy_paths_preserve_overlays_tombstones_and_legacy_manifests`.
+- V38: Workspace creation ! constant workspace/revision metadata referencing immutable Git commit, no tree walk or duplicate path manifest. Point reads ! only requested overlay/Git path; unrelated unavailable objects cannot block creation/read. Full enumeration/status/diff/squash ! same lazy shared base cache, prior manifests preserved; isolation/tombstones/guards unchanged. Tests `v38_lazy_squash_preserves_deletions_and_status`, `virtual_operations`, `v38_workspace_creation_and_point_reads_do_not_enumerate_base`, `v38_lazy_paths_preserve_overlays_tombstones_and_legacy_manifests`.
 
 # §T
 id|status|task|cites
 ---|---|---|---
-T22|~|Lazy workspace references and path reads; preserve legacy manifests and isolation|V38,V1,V2,V4,V5,I.storage
+T22|x|Lazy workspace references/path reads and canonical diff/squash bases; CI 41932265671 Windows/macOS formatting, strict lint, full tests and repeated lifecycle races passed|V38,V1,V2,V4,V5,I.storage
 T21|x|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
 T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,V36,I.storage
 T1|x|Storage, Git object baseline, immutable workspaces, content operations|V1,V2,V3,V4,V5,I.storage

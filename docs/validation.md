@@ -12,10 +12,10 @@ Verified 2026-10-26:
   including redirected stdin/stdout/stderr and a deliberate nonzero exit code.
   All production Git/task/package command constructors use the tested helper.
 - The new storage test first failed because MCP lacked `vwork_storage_info`.
-  It now verifies read-only inspection, shared base manifests for another
-  workspace at the same registered commit, forked revision sharing, and identical
-  edited blobs across workspaces and repository registrations. A separate
-  registration of the same Git path deliberately has a separate base manifest.
+  It verifies read-only inspection, forked revision sharing, and identical
+  edited blobs across workspaces and repository registrations. The lazy-base
+  regression now also verifies that creating another workspace or registration
+  does not write a duplicate file manifest.
 - Local formatting and strict Clippy for macOS and Windows targets passed. No
   tests or GUI applications ran on Sean's Mac. Corporate AVD policy was not
   reproduced. An old unfiltered Goose hook still requires its configuration
