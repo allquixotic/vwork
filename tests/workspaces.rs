@@ -2083,3 +2083,39 @@ fn v38_lazy_paths_preserve_overlays_tombstones_and_legacy_manifests() -> Result<
     assert_eq!(f.read("sibling", "README.md"), "base");
     Ok(())
 }
+
+#[test]
+fn v38_lazy_squash_preserves_deletions_and_status() -> Result<()> {
+    let f = Fixture::new();
+    f.engine.call(
+        "files_delete",
+        &json!({"workspace":"one","path":"src","recursive":true,"expected_revision":f.head("one")}),
+    )?;
+    f.write("one", "new.txt", "added");
+    let before = f
+        .engine
+        .call("workspace_status", &json!({"workspace":"one"}))?["changes"]
+        .clone();
+    assert_eq!(before.as_array().unwrap().len(), 2);
+    f.engine.call(
+        "workspace_squash",
+        &json!({"workspace":"one","expected_revision":f.head("one")}),
+    )?;
+    assert_eq!(
+        f.engine
+            .call("workspace_status", &json!({"workspace":"one"}))?["changes"],
+        before
+    );
+    assert!(
+        f.engine
+            .call("files_read", &json!({"workspace":"one","path":"src/a.rs"}))
+            .is_err()
+    );
+    assert_eq!(f.read("one", "README.md"), "base");
+    assert_eq!(f.read("one", "new.txt"), "added");
+    assert_eq!(
+        f.engine.call("files_list", &json!({"workspace":"one"}))?["total"],
+        3
+    );
+    Ok(())
+}

@@ -178,15 +178,10 @@ impl Engine {
         anyhow::bail!("revision chain too deep; create a compacted workspace")
     }
 
-    pub fn snapshot(&self, ws: &Workspace) -> Result<(Revision, Tree)> {
-        let head = self.revision(&ws.head)?;
-        ensure!(
-            head.repo == ws.repo,
-            "revision belongs to another repository"
-        );
-        let prefix = format!("t/{}/{}/", ws.repo, head.base);
+    fn base_tree(&self, repo: &str, base: &str) -> Result<Tree> {
+        let prefix = format!("t/{}/{}/", repo, base);
         let cached = self.base_cache.lock().unwrap().get(&prefix).cloned();
-        let mut tree = if let Some(tree) = cached {
+        let tree = if let Some(tree) = cached {
             tree
         } else {
             // Existing manifests remain readable. New bases use the already
@@ -194,7 +189,7 @@ impl Engine {
             let transaction = self.db.begin_read()?;
             let imported = transaction
                 .open_table(RECORDS)?
-                .get(format!("m/{}/{}", ws.repo, head.base).as_str())?
+                .get(format!("m/{}/{}", repo, base).as_str())?
                 .is_some();
             let tree = if imported {
                 let mut tree = Tree::new();
@@ -203,15 +198,25 @@ impl Engine {
                 }
                 tree
             } else {
-                git::tree(&self.db, &self.repo(&ws.repo)?, &head.base)?
+                git::tree(&self.db, &self.repo(repo)?, base)?
             };
             let mut cache = self.base_cache.lock().unwrap();
             if cache.len() >= self.config.max_cached_bases {
                 cache.clear();
             }
-            cache.insert(prefix.clone(), tree.clone());
+            cache.insert(prefix, tree.clone());
             tree
         };
+        Ok(tree)
+    }
+
+    pub fn snapshot(&self, ws: &Workspace) -> Result<(Revision, Tree)> {
+        let head = self.revision(&ws.head)?;
+        ensure!(
+            head.repo == ws.repo,
+            "revision belongs to another repository"
+        );
+        let mut tree = self.base_tree(&ws.repo, &head.base)?;
         let mut rev = head.clone();
         let mut chain = Vec::new();
         loop {
@@ -1089,12 +1094,7 @@ impl Engine {
                     })?
                     .1
                 } else {
-                    let mut t = Tree::new();
-                    let prefix = format!("t/{}/{}/", ws.repo, rev.base);
-                    for (p, v) in self.scan(&prefix)? {
-                        t.insert(p[prefix.len()..].into(), serde_json::from_slice(&v)?);
-                    }
-                    t
+                    self.base_tree(&ws.repo, &rev.base)?
                 };
                 let paths: BTreeSet<_> = tree.keys().chain(against.keys()).cloned().collect();
                 let mut changed = Vec::new();
@@ -1152,11 +1152,7 @@ impl Engine {
                 Ok(json!({"history":out,"revision":ws.head}))
             }
             "workspace_squash" => {
-                let prefix = format!("t/{}/{}/", ws.repo, rev.base);
-                let mut base = Tree::new();
-                for (p, v) in self.scan(&prefix)? {
-                    base.insert(p[prefix.len()..].into(), serde_json::from_slice(&v)?);
-                }
+                let base = self.base_tree(&ws.repo, &rev.base)?;
                 let changes = Self::tree_changes(&base, &tree);
                 let updated = self.publish_revision(
                     &ws,

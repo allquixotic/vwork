@@ -160,3 +160,5 @@ B41|2026-11-04|Fjall full-value get/iteration inflated object bodies for Git hea
 B42|2026-11-04|V25 crash fixture assumed every ordinary commit immediately durable, conflicting with newly authorized 60s buffering|Explicit save barrier before crash assertion; retain V25 corruption preservation and new V37 real periodic/explicit kill tests
 
 B43|2026-11-04|First workspace at a commit eagerly walked every Git path/header and wrote duplicate manifest entries before the chat could open; every point read also built a full snapshot|V38; defer enumeration, resolve requested paths through overlays/Git trees, preserve existing manifests and full-tree validation.
+
+B44|2026-11-04|Status/diff/squash still assumed a persisted path manifest after lazy base creation; missing index looked empty, misreported status and could omit squash tombstones|V38; shared canonical base_tree for every enumerating consumer; explicit lazy squash/deletion regression.
