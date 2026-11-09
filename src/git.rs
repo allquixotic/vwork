@@ -374,9 +374,16 @@ pub fn write_tree(repository: &git2::Repository, entries: &Tree) -> Result<Oid> 
 }
 
 pub fn log(db: &Arc<Database>, repo: &Repository, reference: &str, limit: usize) -> Result<String> {
+    if limit == 0 {
+        return Ok(String::new());
+    }
     let repository = open(db, repo, 3)?;
     let mut walk = repository.revwalk()?;
-    walk.set_sorting(git2::Sort::TOPOLOGICAL | git2::Sort::TIME)?;
+    // libgit2's topological sort drains the entire reachable DAG before its
+    // first result. A three-line preview must not read years of history.
+    // Date-order traversal expands only the frontier needed for the preview;
+    // merge parents remain reachable (this is not a first-parent shortcut).
+    walk.set_sorting(git2::Sort::TIME)?;
     walk.push(Oid::from_str(reference)?)?;
     let mut text = String::new();
     for oid in walk.take(limit) {
@@ -425,12 +432,7 @@ pub fn prepare_build(
     config.set_str("core.hooksPath", &path_argument(&hooks).to_string_lossy())?;
     view.set_workdir(checkout, false)?;
     let odb = view.odb()?;
-    for oid in git_store::members(db, &source.id)? {
-        if !odb.exists(oid) {
-            let (kind, bytes) = git_store::read(db, oid)?;
-            ensure!(odb.write(kind, &bytes)? == oid, "object export mismatch");
-        }
-    }
+    export_packs(db, source, &view)?;
     let names: Vec<String> = view
         .references()?
         .filter_map(|r| r.ok()?.name().ok().map(String::from))
@@ -467,6 +469,66 @@ pub fn prepare_build(
     drop(odb);
     drop(config);
     Ok(view)
+}
+
+/// External Git needs a filesystem ODB. Export bounded, streamed packs instead
+/// of one loose file (and its metadata/flush work) per historical object. Keep
+/// full history, tags and overlays; never borrow the user's source checkout.
+fn export_packs(db: &Arc<Database>, source: &Repository, view: &git2::Repository) -> Result<()> {
+    use std::io::Write;
+    const MAX_OBJECTS: usize = 4096;
+    const MAX_BYTES: usize = 64 * 1024 * 1024;
+    let repository = open(db, source, 3)?;
+    // Bound libgit2's delta-search memory and worker count. PackBuilder does
+    // not honor Git CLI's pack.window setting, so bound each batch as well.
+    let mut config = view.config()?;
+    config.set_i32("pack.windowMemory", 16 * 1024 * 1024)?;
+    config.set_i32("pack.deltaCacheSize", 16 * 1024 * 1024)?;
+    repository.set_config(&config)?;
+    let input = repository.odb()?;
+    let output = view.odb()?;
+    let mut objects = git_store::members(db, &source.id)?.into_iter().peekable();
+    while objects.peek().is_some() {
+        let mut builder = repository.packbuilder()?;
+        builder.set_threads(1);
+        let mut weight = 0usize;
+        while let Some(&oid) = objects.peek() {
+            if output.exists(oid) {
+                objects.next();
+                continue;
+            }
+            let (size, _) = input.read_header(oid)?;
+            if builder.object_count() > 0
+                && (builder.object_count() >= MAX_OBJECTS
+                    || weight.saturating_add(size) > MAX_BYTES)
+            {
+                break;
+            }
+            // A single large object is permitted, still bounded by the store's
+            // object limit. No whole-pack buffer or loose-object staging.
+            builder.insert_object(oid, None)?;
+            weight = weight.saturating_add(size);
+            objects.next();
+        }
+        if builder.object_count() == 0 {
+            continue;
+        }
+        let mut writer = output.packwriter()?;
+        let mut io_error = None;
+        let packed = builder.foreach(|bytes| match writer.write_all(bytes) {
+            Ok(()) => true,
+            Err(error) => {
+                io_error = Some(error);
+                false
+            }
+        });
+        if let Some(error) = io_error {
+            return Err(error.into());
+        }
+        packed?;
+        writer.commit()?;
+    }
+    Ok(())
 }
 
 pub fn changed(view: &git2::Repository) -> Result<Vec<String>> {

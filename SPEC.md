@@ -68,9 +68,12 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V38: Workspace creation ! constant workspace/revision metadata referencing immutable Git commit, no tree walk or duplicate path manifest. Point reads ! only requested overlay/Git path; unrelated unavailable objects cannot block creation/read. Full enumeration/status/diff/squash ! same lazy shared base cache, prior manifests preserved; isolation/tombstones/guards unchanged. Tests `v38_lazy_squash_preserves_deletions_and_status`, `virtual_operations`, `v38_workspace_creation_and_point_reads_do_not_enumerate_base`, `v38_lazy_paths_preserve_overlays_tombstones_and_legacy_manifests`.
 
+- V39: Limited Git log ! date-order frontier traversal, no whole-history topological preprocessing; preserve merge parents. Temporary Git history ! streamed packs bounded by object count/decoded bytes and one pack worker, retain all history/tags/overlays and source independence. Repreparing a lease ! existing packs unchanged, export missing objects only. Tests `v39_short_log_does_not_read_distant_history`, `v39_incremental_log_keeps_both_merge_parents`, `v39_temporary_git_history_is_packed_and_complete`.
+
 # §T
 id|status|task|cites
 ---|---|---|---
+T23|~|Incremental limited Git log and bounded streamed packs for temporary Git history; all targets compile and strict Clippy passes on macOS; Windows/runtime execution and monorepo benchmark pending|V39,V11,V22,I.storage
 T22|x|Lazy workspace references/path reads and canonical diff/squash bases; CI 41932265671 Windows/macOS formatting, strict lint, full tests and repeated lifecycle races passed|V38,V1,V2,V4,V5,I.storage
 T21|x|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
 T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,V36,I.storage
@@ -162,3 +165,5 @@ B42|2026-11-04|V25 crash fixture assumed every ordinary commit immediately durab
 B43|2026-11-04|First workspace at a commit eagerly walked every Git path/header and wrote duplicate manifest entries before the chat could open; every point read also built a full snapshot|V38; defer enumeration, resolve requested paths through overlays/Git trees, preserve existing manifests and full-tree validation.
 
 B44|2026-11-04|Status/diff/squash still assumed a persisted path manifest after lazy base creation; missing index looked empty, misreported status and could omit squash tombstones|V38; shared canonical base_tree for every enumerating consumer; explicit lazy squash/deletion regression.
+
+B45|2026-11-09|Three-entry log topologically sorted all reachable commits; temporary Git compatibility repository exported every historical object as a loose file|V39; incremental date-order log and bounded streamed packs, complete-history and missing-ancestor regressions; runtime acceptance pending.
