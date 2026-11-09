@@ -73,7 +73,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 # §T
 id|status|task|cites
 ---|---|---|---
-T23|~|Incremental limited Git log and bounded streamed packs for temporary Git history; all targets compile and strict Clippy passes on macOS; Windows/runtime execution and monorepo benchmark pending|V39,V11,V22,I.storage
+T23|x|Explicit date-prioritized history frontier and bounded streamed packs; CI 42678235015 Windows/macOS strict lint, full tests and repeated races passed. Games 4,000-commit/2,000-file fixture: temporary 28.9s→6.3s, three-entry log 23.8ms→0.6ms, Git object files 14,040→12; fsck/history preserved, peak 33,054,720 bytes. Fastrock receipt docs/benchmarks/042-workspace-games-2026-11-09.json|V39,V11,V22,I.storage
 T22|x|Lazy workspace references/path reads and canonical diff/squash bases; CI 41932265671 Windows/macOS formatting, strict lint, full tests and repeated lifecycle races passed|V38,V1,V2,V4,V5,I.storage
 T21|x|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
 T20|x|Fjall transaction/storage adapter, bounded Git deltas, resumable validated redb migration, contention and recovery acceptance|V1,V2,V3,V9,V25,V30,V31,V32,V33,V34,V35,V36,I.storage
