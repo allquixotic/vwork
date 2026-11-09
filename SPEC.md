@@ -167,3 +167,5 @@ B43|2026-11-04|First workspace at a commit eagerly walked every Git path/header 
 B44|2026-11-04|Status/diff/squash still assumed a persisted path manifest after lazy base creation; missing index looked empty, misreported status and could omit squash tombstones|V38; shared canonical base_tree for every enumerating consumer; explicit lazy squash/deletion regression.
 
 B45|2026-11-09|Three-entry log topologically sorted all reachable commits; temporary Git compatibility repository exported every historical object as a loose file|V39; incremental date-order log and bounded streamed packs, complete-history and missing-ancestor regressions; runtime acceptance pending.
+
+B46|2026-11-09|Changing revwalk to TIME still enabled libgit2 limit_list preprocessing; Windows v39 missing-ancestor regression failed|V39; explicit date-prioritized parent frontier, deduplicate merge ancestors, stop expansion at requested count; retain failing regression.

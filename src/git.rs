@@ -378,22 +378,33 @@ pub fn log(db: &Arc<Database>, repo: &Repository, reference: &str, limit: usize)
         return Ok(String::new());
     }
     let repository = open(db, repo, 3)?;
-    let mut walk = repository.revwalk()?;
-    // libgit2's topological sort drains the entire reachable DAG before its
-    // first result. A three-line preview must not read years of history.
-    // Date-order traversal expands only the frontier needed for the preview;
-    // merge parents remain reachable (this is not a first-parent shortcut).
-    walk.set_sorting(git2::Sort::TIME)?;
-    walk.push(Oid::from_str(reference)?)?;
+    // libgit2 sets its `limited` flag for *every* non-NONE sorting mode,
+    // including TIME, and preprocesses reachable history in limit_list.
+    // Maintain our own date-prioritized frontier so short previews only read
+    // parents of emitted commits. Both merge parents remain reachable.
+    let first = repository.find_commit(Oid::from_str(reference)?)?;
+    let mut pending = std::collections::BinaryHeap::from([(first.time().seconds(), first.id())]);
+    let mut discovered = std::collections::HashSet::from([first.id()]);
     let mut text = String::new();
-    for oid in walk.take(limit) {
-        let c = repository.find_commit(oid?)?;
+    let mut emitted = 0;
+    while let Some((_, oid)) = pending.pop() {
+        let c = repository.find_commit(oid)?;
         text.push_str(&format!(
             "{}\t{}\t{}\n",
             c.id(),
             c.time().seconds(),
             c.summary()?.unwrap_or("")
         ));
+        emitted += 1;
+        if emitted == limit {
+            break;
+        }
+        for parent in c.parent_ids() {
+            if discovered.insert(parent) {
+                let parent = repository.find_commit(parent)?;
+                pending.push((parent.time().seconds(), parent.id()));
+            }
+        }
     }
     Ok(text)
 }
