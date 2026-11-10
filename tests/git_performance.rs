@@ -33,6 +33,13 @@ fn v40_duplicate_import_links_membership_without_reading_source_payloads() -> Re
         permissions.set_readonly(false);
         std::fs::set_permissions(&duplicate, permissions)?;
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&duplicate)?.permissions();
+        permissions.set_mode(permissions.mode() | 0o200);
+        std::fs::set_permissions(&duplicate, permissions)?;
+    }
     std::fs::write(duplicate, b"unreadable duplicate")?;
     let mut imported = engine.repo("fixture")?;
     imported.id = "shared".into();
