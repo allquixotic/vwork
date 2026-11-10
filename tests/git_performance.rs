@@ -25,6 +25,9 @@ fn v40_duplicate_import_links_membership_without_reading_source_payloads() -> Re
     // its redundant copy. The deliberately unreadable duplicate proves that.
     let duplicate = repo.path().join("objects").join(&id[..2]).join(&id[2..]);
     #[cfg(windows)]
+    // Only clears the Windows READONLY attribute on our generated fixture.
+    // This block is absent on Unix, where this API would widen mode bits.
+    #[allow(clippy::permissions_set_readonly_false)]
     {
         let mut permissions = std::fs::metadata(&duplicate)?.permissions();
         permissions.set_readonly(false);
