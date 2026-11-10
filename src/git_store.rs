@@ -464,6 +464,14 @@ pub(crate) fn link_existing(
     Ok(true)
 }
 
+pub(crate) fn has_object(db: &Database, oid: Oid) -> Result<bool> {
+    Ok(db
+        .begin_read()?
+        .open_table(HEADERS)?
+        .get(oid.to_string().as_str())?
+        .is_some())
+}
+
 /// Overlay objects are reachable through revision roots, not permanent import
 /// membership. Publishing their membership and revision is one atomic commit.
 pub(crate) fn write_overlay(

@@ -138,6 +138,10 @@ partially changing the workspace.
   publication and cleanup, plus decoded/reused import-object counts. A private
   packed ref file avoids per-ref filesystem work; already stored objects gain
   repository membership without decoding a redundant incoming copy.
+  Independent repository fetches/clones can overlap, up to four transfers or
+  the configured temporary-copy limit if lower. Same-repository work remains
+  serialized. Active receivers are protected from periodic cleanup; shared
+  object imports retry bounded database conflicts without replaying transfers.
 - Generated Goose recipe/config fragment, consumer `AGENTS.md` and native
   `PreToolUse` hook. Server instructions work with other stdio MCP clients too.
 

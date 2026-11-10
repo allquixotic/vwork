@@ -6,6 +6,47 @@ use serde_json::json;
 use vwork::{engine::Engine, model::Config};
 
 #[test]
+fn v41_concurrent_imports_preserve_shared_objects_and_repository_membership() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    let ids = history(&source, 260)?;
+    let engine = std::sync::Arc::new(Engine::open(temp.path().join("store"), Config::default())?);
+    let barrier = std::sync::Barrier::new(4);
+    std::thread::scope(|scope| -> Result<()> {
+        let mut calls = Vec::new();
+        for n in 0..4 {
+            let (engine, source, barrier) = (&engine, &source, &barrier);
+            calls.push(scope.spawn(move || {
+                barrier.wait();
+                engine.call(
+                    "repo_register",
+                    &json!({"repo":format!("fixture-{n}"),"path":source}),
+                )
+            }));
+        }
+        for call in calls {
+            call.join().unwrap()?;
+        }
+        Ok(())
+    })?;
+    let expected = vwork::git_store::members(&engine.db, "fixture-0")?;
+    assert!(expected.len() > 768);
+    for n in 0..4 {
+        let name = format!("fixture-{n}");
+        assert_eq!(
+            engine.repo(&name)?.refs["HEAD"],
+            ids.last().unwrap().to_string()
+        );
+        assert_eq!(vwork::git_store::members(&engine.db, &name)?, expected);
+    }
+    for oid in expected {
+        let (kind, bytes) = vwork::git_store::read(&engine.db, oid)?;
+        assert_eq!(Oid::hash_object(kind, &bytes)?, oid);
+    }
+    Ok(())
+}
+
+#[test]
 fn v40_duplicate_import_links_membership_without_reading_source_payloads() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let source = temp.path().join("source");

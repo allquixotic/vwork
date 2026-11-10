@@ -21,6 +21,7 @@ mod leases;
 pub mod maintenance;
 pub mod migration;
 pub mod storage;
+mod transfers;
 
 #[cfg(test)]
 mod legacy_storage;

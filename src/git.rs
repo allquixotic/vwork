@@ -145,6 +145,51 @@ pub(crate) struct ImportStats {
     decoded_bytes: usize,
 }
 
+impl ImportStats {
+    fn append(&mut self, other: Self) {
+        self.visited_objects += other.visited_objects;
+        self.reused_objects += other.reused_objects;
+        self.decoded_objects += other.decoded_objects;
+        self.decoded_bytes = self.decoded_bytes.saturating_add(other.decoded_bytes);
+    }
+}
+
+fn import_batch(
+    db: &Database,
+    odb: &git2::Odb<'_>,
+    repo: &str,
+    ids: &[Oid],
+    level: i32,
+    deadline: std::time::Instant,
+) -> Result<ImportStats> {
+    // Different repositories may receive the same OIDs concurrently. Retry
+    // pure bounded storage work against the new snapshot, never the transport.
+    // Reprepare deltas too: a competing import may choose another base encoding.
+    db.transaction(|transaction| {
+        let mut stats = ImportStats::default();
+        for id in ids {
+            ensure!(std::time::Instant::now() < deadline, "Git import timed out");
+            stats.visited_objects += 1;
+            if git_store::link_existing(transaction, repo, *id)? {
+                stats.reused_objects += 1;
+            } else {
+                let object = odb.read(*id)?;
+                git_store::write_record(
+                    transaction,
+                    repo,
+                    *id,
+                    object.kind(),
+                    object.data(),
+                    level,
+                )?;
+                stats.decoded_objects += 1;
+                stats.decoded_bytes = stats.decoded_bytes.saturating_add(object.len());
+            }
+        }
+        Ok(stats)
+    })
+}
+
 /// Fetch needs only objects, not another scan of the receiver's refs/config.
 pub(crate) fn import_objects(
     db: &Arc<Database>,
@@ -157,35 +202,21 @@ pub(crate) fn import_objects(
     let odb = source.odb()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
     let mut failure = None;
-    // Bound writer hold time and amortize durable commits across small batches.
-    let mut transaction = Some(db.begin_write()?);
-    let mut batch_objects = 0usize;
+    // Keep only bounded OID batches so an OCC retry can reread owned packs
+    // without retaining another copy of all decoded object bodies in memory.
+    let mut ids = Vec::new();
     let mut batch_bytes = 0usize;
     odb.foreach(|id| {
         let result = (|| -> Result<()> {
             ensure!(std::time::Instant::now() < deadline, "Git import timed out");
-            stats.visited_objects += 1;
-            if git_store::link_existing(transaction.as_ref().unwrap(), repo, *id)? {
-                stats.reused_objects += 1;
-            } else {
-                let object = odb.read(*id)?;
-                git_store::write_record(
-                    transaction.as_ref().unwrap(),
-                    repo,
-                    *id,
-                    object.kind(),
-                    object.data(),
-                    level,
-                )?;
-                stats.decoded_objects += 1;
-                stats.decoded_bytes = stats.decoded_bytes.saturating_add(object.len());
-                batch_bytes = batch_bytes.saturating_add(object.len());
+            ids.push(*id);
+            // Existing objects need no source payload/header read at all.
+            if !git_store::has_object(db, *id)? {
+                batch_bytes = batch_bytes.saturating_add(odb.read_header(*id)?.0);
             }
-            batch_objects += 1;
-            if batch_objects >= 256 || batch_bytes >= 64 * 1024 * 1024 {
-                transaction.take().unwrap().commit()?;
-                transaction = Some(db.begin_write()?);
-                batch_objects = 0;
+            if ids.len() >= 256 || batch_bytes >= 64 * 1024 * 1024 {
+                stats.append(import_batch(db, &odb, repo, &ids, level, deadline)?);
+                ids.clear();
                 batch_bytes = 0;
             }
             Ok(())
@@ -207,7 +238,9 @@ pub(crate) fn import_objects(
     if let Some(error) = failure {
         return Err(error);
     }
-    transaction.take().unwrap().commit()?;
+    if !ids.is_empty() {
+        stats.append(import_batch(db, &odb, repo, &ids, level, deadline)?);
+    }
     Ok(stats)
 }
 

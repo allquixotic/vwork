@@ -30,7 +30,7 @@ pub struct Engine {
     build_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     pub(crate) lifecycle: RwLock<()>,
     pub(crate) temporary_lock: Mutex<()>,
-    pub(crate) transfer_lock: Mutex<()>,
+    pub(crate) transfers: crate::transfers::Transfers,
     base_cache: Mutex<HashMap<String, Tree>>,
 }
 
@@ -102,7 +102,7 @@ impl Engine {
             build_locks: Mutex::new(HashMap::new()),
             lifecycle: RwLock::new(()),
             temporary_lock: Mutex::new(()),
-            transfer_lock: Mutex::new(()),
+            transfers: Default::default(),
             base_cache: Mutex::new(HashMap::new()),
         };
         engine.migrate_repositories()?;
@@ -493,19 +493,6 @@ impl Engine {
         Ok(repo)
     }
 
-    pub(crate) fn cleanup_transfers(&self) -> Result<()> {
-        let Ok(_transfer) = self.transfer_lock.try_lock() else {
-            return Ok(());
-        };
-        for (key, _) in self.scan("transfer/")? {
-            if let Err(error) = self.remove_transfer(&key[9..]) {
-                let mut record: Value = self.get(&key)?;
-                record["cleanup_error"] = json!(format!("{error:#}"));
-                self.put(&key, &record)?;
-            }
-        }
-        Ok(())
-    }
     pub(crate) fn remove_transfer(&self, transfer: &str) -> Result<()> {
         valid_id(transfer)?;
         let path = self.home.join("transfers").join(transfer);
@@ -543,24 +530,8 @@ impl Engine {
                 json!({"repo":repo.id,"stored":true,"storage":"fjall","default_reference":"HEAD"}),
             );
         }
-        let _transfer = self
-            .transfer_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("transfer lock poisoned"))?;
-        ensure!(
-            self.scan("transfer/")?.len() < self.config.max_temporary_copies,
-            "pending transfer cleanup limit reached; inspect temporary_list"
-        );
-        let transfer = id();
-        let path = self.home.join("transfers").join(&transfer);
-        safe_ancestors(&path)?;
-        self.put(
-            &format!("transfer/{transfer}"),
-            &json!({"repo":repo_id,"created":now()}),
-        )?;
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::create_dir(&path)?;
-        std::fs::write(path.join("owner"), &transfer)?;
+        let transfer = self.begin_transfer(repo_id, "clone")?;
+        let path = &transfer.path;
         let result = (|| -> Result<Value> {
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_secs(self.config.task_timeout_seconds);
@@ -619,7 +590,7 @@ impl Engine {
             self.publish_repository(&repo)?;
             Ok(json!({"repo":repo.id,"stored":true,"storage":"fjall","default_reference":"HEAD"}))
         })();
-        let cleanup = self.remove_transfer(&transfer);
+        let cleanup = transfer.finish();
         match (result, cleanup) {
             (Ok(mut result), Err(error)) => {
                 result["cleanup_pending"] = json!(error.to_string());

@@ -2,7 +2,7 @@
 use crate::{
     engine::{Engine, RECORDS},
     git, git_store,
-    model::{Repository, id, now, valid_id},
+    model::{Repository, valid_id},
 };
 use anyhow::{Context, Result, ensure};
 
@@ -62,34 +62,20 @@ impl Engine {
             .context("registration has no saved fetch source; supply source once (Git URL or absolute repository path)")?;
         let source = git::clone_source(&source)?;
         timings.insert("source", milliseconds(source_started));
-        let transfer_started = Instant::now();
-        let _transfer = self
-            .transfer_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("transfer lock poisoned"))?;
-        timings.insert("transfer_wait", milliseconds(transfer_started));
+        let transfer = self.begin_transfer(repo_id, "fetch")?;
+        timings.insert("transfer_wait", transfer.wait_ms);
         let prepare_started = Instant::now();
-        ensure!(
-            self.scan("transfer/")?.len() < self.config.max_temporary_copies,
-            "pending transfer cleanup limit reached; inspect temporary_list"
-        );
-        let transfer = id();
-        let path = self.home.join("transfers").join(&transfer);
-        crate::engine::safe_ancestors(&path)?;
-        self.put(
-            &format!("transfer/{transfer}"),
-            &json!({"repo":repo_id,"created":now(),"operation":"fetch"}),
-        )?;
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::create_dir(&path)?;
-        std::fs::write(path.join("owner"), &transfer)?;
+        let path = &transfer.path;
         let result = (|| -> Result<Value> {
             let mut init = git2::RepositoryInitOptions::new();
             init.bare(true).external_template(false);
             let receiver = git2::Repository::init_opts(path.join("pack"), &init)?;
             git_store::attach_readonly(&receiver.odb()?, self.db.clone(), repo_id)?;
             seed_refs(&receiver, &repo.refs)?;
-            timings.insert("prepare", milliseconds(prepare_started));
+            timings.insert(
+                "prepare",
+                transfer.allocation_ms + milliseconds(prepare_started),
+            );
             let transport_started = Instant::now();
             let mut remote = receiver.remote_anonymous(&source)?;
             let deadline = Instant::now() + Duration::from_secs(self.config.task_timeout_seconds);
@@ -199,7 +185,7 @@ impl Engine {
             )
         })();
         let cleanup_started = Instant::now();
-        let cleanup = self.remove_transfer(&transfer);
+        let cleanup = transfer.finish();
         timings.insert("cleanup", milliseconds(cleanup_started));
         timings.insert("total", milliseconds(started));
         let result = result.map(|mut value| {
