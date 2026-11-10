@@ -75,7 +75,7 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 # §T
 id|status|task|cites
 ---|---|---|---
-T24|.|Bound fetch negotiation file work, reuse stored import objects before decoding, expose phase timings; guarded Windows comparison and full Windows/macOS CI|V40,V26,V21,V35,I.storage,I.rpc
+T24|x|Packed fetch negotiation refs, metadata-only object reuse and phase timings; CI 42893961204 Windows/macOS strict lint/full tests/repeated races passed at 9b5c268. Games 2,001-branch/400-file unchanged/update/repeat 2332/5432/4006ms→148/970/228ms; 51.9MB peak, three decoded/403 reused objects. Fastrock receipt docs/benchmarks/fetch-games-2026-11-10.json|V40,V26,V21,V35,I.storage,I.rpc
 T23|x|Explicit date-prioritized history frontier and bounded streamed packs; CI 42678235015 Windows/macOS strict lint, full tests and repeated races passed. Games 4,000-commit/2,000-file fixture: temporary 28.9s→6.3s, three-entry log 23.8ms→0.6ms, Git object files 14,040→12; fsck/history preserved, peak 33,054,720 bytes. Fastrock receipt docs/benchmarks/042-workspace-games-2026-11-09.json|V39,V11,V22,I.storage
 T22|x|Lazy workspace references/path reads and canonical diff/squash bases; CI 41932265671 Windows/macOS formatting, strict lint, full tests and repeated lifecycle races passed|V38,V1,V2,V4,V5,I.storage
 T21|x|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
