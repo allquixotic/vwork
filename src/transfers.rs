@@ -59,7 +59,14 @@ impl Engine {
             .lock()
             .map_err(|_| anyhow!("transfer allocation lock poisoned"))?;
         loop {
-            let pending = self.scan("transfer/")?.len();
+            let mut pending = self.scan("transfer/")?.len();
+            if pending >= self.config.max_temporary_copies && pending > active.len() {
+                // A restart can leave every slot occupied by abandoned packs.
+                // Reap only inactive owned receivers on this worker before
+                // deciding capacity is blocked; no explicit recovery step.
+                self.cleanup_inactive_transfers(&active)?;
+                pending = self.scan("transfer/")?.len();
+            }
             if pending < self.config.max_temporary_copies && active.len() < MAX_CONCURRENT_TRANSFERS
             {
                 break;
@@ -103,6 +110,12 @@ impl Engine {
         let Ok(active) = self.transfers.active.try_lock() else {
             return Ok(());
         };
+        self.cleanup_inactive_transfers(&active)?;
+        self.transfers.available.notify_all();
+        Ok(())
+    }
+
+    fn cleanup_inactive_transfers(&self, active: &HashSet<String>) -> Result<()> {
         for (key, _) in self.scan("transfer/")? {
             let transfer = &key[9..];
             if active.contains(transfer) {
@@ -114,7 +127,6 @@ impl Engine {
                 self.put(&key, &record)?;
             }
         }
-        self.transfers.available.notify_all();
         Ok(())
     }
 }
@@ -151,9 +163,9 @@ mod tests {
         let path = abandoned.path.clone();
         drop(abandoned);
         assert!(path.exists());
-        engine.cleanup_transfers()?;
+        let next = engine.begin_transfer("fixture", "fetch")?;
         assert!(!path.exists());
-        engine.begin_transfer("fixture", "fetch")?.finish()?;
+        next.finish()?;
         assert!(engine.scan("transfer/")?.is_empty());
         Ok(())
     }
