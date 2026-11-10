@@ -205,6 +205,19 @@ fn v26_fetch_updates_refs() -> Result<()> {
     let result: Value =
         serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())?;
     assert_eq!(result["head"], expected);
+    assert!(result["import"]["decoded_objects"].as_u64().unwrap() > 0);
+    for phase in [
+        "repository_wait",
+        "transfer_wait",
+        "prepare",
+        "transport",
+        "import",
+        "publish",
+        "cleanup",
+    ] {
+        let elapsed = result["timings_ms"][phase].as_f64().unwrap();
+        assert!(elapsed >= 0. && elapsed <= result["timings_ms"]["total"].as_f64().unwrap());
+    }
     assert_eq!(f.head("old"), old);
     assert_eq!(f.read("old", "README.md"), "base");
     f.engine.call(
@@ -215,6 +228,7 @@ fn v26_fetch_updates_refs() -> Result<()> {
     let objects = f.engine.call("storage_info", &json!({}))?["git_objects"].clone();
     let repeated = f.engine.call("repo_fetch", &json!({"repo":"mirror"}))?;
     assert_eq!(repeated["received_objects"], 0);
+    assert_eq!(repeated["import"]["decoded_objects"], 0);
     assert_eq!(
         f.engine.call("storage_info", &json!({}))?["git_objects"],
         objects

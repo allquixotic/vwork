@@ -114,6 +114,46 @@ pub fn import(
     level: i32,
     timeout: u64,
 ) -> Result<()> {
+    import_objects(db, source, &repo.id, level, timeout)?;
+    repo.refs.clear();
+    for reference in source.references()? {
+        let reference = reference?.resolve()?;
+        if let (Ok(name), Some(id)) = (reference.name(), reference.target()) {
+            repo.refs.insert(name.into(), id.to_string());
+        }
+    }
+    if let Ok(head) = source.head() {
+        repo.refs
+            .insert("HEAD".into(), head.peel_to_commit()?.id().to_string());
+    }
+    let config = source.config()?;
+    repo.author_name = config
+        .get_string("user.name")
+        .unwrap_or_else(|_| "vwork".into());
+    repo.author_email = config
+        .get_string("user.email")
+        .unwrap_or_else(|_| "vwork@localhost".into());
+    repo.stored = true;
+    Ok(())
+}
+
+#[derive(Default, serde::Serialize)]
+pub(crate) struct ImportStats {
+    visited_objects: usize,
+    reused_objects: usize,
+    decoded_objects: usize,
+    decoded_bytes: usize,
+}
+
+/// Fetch needs only objects, not another scan of the receiver's refs/config.
+pub(crate) fn import_objects(
+    db: &Arc<Database>,
+    source: &git2::Repository,
+    repo: &str,
+    level: i32,
+    timeout: u64,
+) -> Result<ImportStats> {
+    let mut stats = ImportStats::default();
     let odb = source.odb()?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout);
     let mut failure = None;
@@ -124,17 +164,24 @@ pub fn import(
     odb.foreach(|id| {
         let result = (|| -> Result<()> {
             ensure!(std::time::Instant::now() < deadline, "Git import timed out");
-            let object = odb.read(*id)?;
-            git_store::write_record(
-                transaction.as_ref().unwrap(),
-                &repo.id,
-                *id,
-                object.kind(),
-                object.data(),
-                level,
-            )?;
+            stats.visited_objects += 1;
+            if git_store::link_existing(transaction.as_ref().unwrap(), repo, *id)? {
+                stats.reused_objects += 1;
+            } else {
+                let object = odb.read(*id)?;
+                git_store::write_record(
+                    transaction.as_ref().unwrap(),
+                    repo,
+                    *id,
+                    object.kind(),
+                    object.data(),
+                    level,
+                )?;
+                stats.decoded_objects += 1;
+                stats.decoded_bytes = stats.decoded_bytes.saturating_add(object.len());
+                batch_bytes = batch_bytes.saturating_add(object.len());
+            }
             batch_objects += 1;
-            batch_bytes = batch_bytes.saturating_add(object.len());
             if batch_objects >= 256 || batch_bytes >= 64 * 1024 * 1024 {
                 transaction.take().unwrap().commit()?;
                 transaction = Some(db.begin_write()?);
@@ -161,26 +208,7 @@ pub fn import(
         return Err(error);
     }
     transaction.take().unwrap().commit()?;
-    repo.refs.clear();
-    for reference in source.references()? {
-        let reference = reference?.resolve()?;
-        if let (Ok(name), Some(id)) = (reference.name(), reference.target()) {
-            repo.refs.insert(name.into(), id.to_string());
-        }
-    }
-    if let Ok(head) = source.head() {
-        repo.refs
-            .insert("HEAD".into(), head.peel_to_commit()?.id().to_string());
-    }
-    let config = source.config()?;
-    repo.author_name = config
-        .get_string("user.name")
-        .unwrap_or_else(|_| "vwork".into());
-    repo.author_email = config
-        .get_string("user.email")
-        .unwrap_or_else(|_| "vwork@localhost".into());
-    repo.stored = true;
-    Ok(())
+    Ok(stats)
 }
 
 pub fn resolve(db: &Arc<Database>, repo: &Repository, reference: &str) -> Result<String> {

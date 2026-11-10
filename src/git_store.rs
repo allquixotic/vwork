@@ -443,6 +443,27 @@ pub(crate) fn write_record(
     insert_prepared(tx, repo, oid, kind, bytes, prepared.as_deref(), MEMBERS)
 }
 
+/// Reuse an immutable, already verified object without reading its payload
+/// from either the source ODB or Fjall. Engine lifecycle guards exclude GC.
+/// Membership still needs publication when another repository owns the copy.
+pub(crate) fn link_existing(
+    tx: &crate::kv::WriteTransaction<'_>,
+    repo: &str,
+    oid: Oid,
+) -> Result<bool> {
+    let read = tx.database().begin_read()?;
+    let headers = read.open_table(HEADERS)?;
+    let Some(header) = headers.get(oid.to_string().as_str())? else {
+        return Ok(false);
+    };
+    encoded_len(header.value())?;
+    let member = format!("{repo}/{oid}");
+    if read.open_table(MEMBERS)?.get(member.as_str())?.is_none() {
+        tx.open_table(MEMBERS)?.insert(member.as_str(), b"")?;
+    }
+    Ok(true)
+}
+
 /// Overlay objects are reachable through revision roots, not permanent import
 /// membership. Publishing their membership and revision is one atomic commit.
 pub(crate) fn write_overlay(

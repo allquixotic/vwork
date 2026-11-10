@@ -70,9 +70,12 @@ Provide compressed, isolated, persistent virtual workspaces for Goose without ad
 
 - V39: Limited Git log ! date-order frontier traversal, no whole-history topological preprocessing; preserve merge parents. Temporary Git history ! streamed packs bounded by object count/decoded bytes and one pack worker, retain all history/tags/overlays and source independence. Repreparing a lease ! existing packs unchanged, export missing objects only. Tests `v39_short_log_does_not_read_distant_history`, `v39_incremental_log_keeps_both_merge_parents`, `v39_temporary_git_history_is_packed_and_complete`.
 
+- V40: Fetch negotiation refs ! one validated sorted packed file, no loose file per ref; duplicate imported OIDs ! link repository membership from immutable metadata before source decoding. Fetch result ! phase timings and decoded/reused counts; complete refs/history, pinned workspaces, private commits and atomic publication retained. Tests `v40_negotiation_refs_use_one_packed_file`, `v40_negotiation_refs_reject_injected_records`, `v40_duplicate_import_links_membership_without_reading_source_payloads`, V26 fetch regressions.
+
 # §T
 id|status|task|cites
 ---|---|---|---
+T24|.|Bound fetch negotiation file work, reuse stored import objects before decoding, expose phase timings; guarded Windows comparison and full Windows/macOS CI|V40,V26,V21,V35,I.storage,I.rpc
 T23|x|Explicit date-prioritized history frontier and bounded streamed packs; CI 42678235015 Windows/macOS strict lint, full tests and repeated races passed. Games 4,000-commit/2,000-file fixture: temporary 28.9s→6.3s, three-entry log 23.8ms→0.6ms, Git object files 14,040→12; fsck/history preserved, peak 33,054,720 bytes. Fastrock receipt docs/benchmarks/042-workspace-games-2026-11-09.json|V39,V11,V22,I.storage
 T22|x|Lazy workspace references/path reads and canonical diff/squash bases; CI 41932265671 Windows/macOS formatting, strict lint, full tests and repeated lifecycle races passed|V38,V1,V2,V4,V5,I.storage
 T21|x|Bounded RAM journal buffering, dedicated background flush/sync, explicit durable barriers and crash tests|V37,V32,V34,V21,V22,I.storage
@@ -169,3 +172,5 @@ B44|2026-11-04|Status/diff/squash still assumed a persisted path manifest after 
 B45|2026-11-09|Three-entry log topologically sorted all reachable commits; temporary Git compatibility repository exported every historical object as a loose file|V39; incremental date-order log and bounded streamed packs, complete-history and missing-ancestor regressions; runtime acceptance pending.
 
 B46|2026-11-09|Changing revwalk to TIME still enabled libgit2 limit_list preprocessing; Windows v39 missing-ancestor regression failed|V39; explicit date-prioritized parent frontier, deduplicate merge ancestors, stop expansion at requested count; retain failing regression.
+B47|2026-11-10|Fetch recreated every ref as a loose file and decoded redundant incoming objects before deduplication; no phase timings distinguished transport/import/lock waits|V40; validated packed negotiation refs, metadata-only reuse with repository membership, object-only fetch import and timings
+B48|2026-11-10|Duplicate-import regression tried overwriting Windows read-only loose object; access denied preceded intended baseline failure|Clear fixture-only Windows readonly flag; baseline then fails at duplicate payload inflation, V40 candidate must pass

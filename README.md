@@ -133,6 +133,11 @@ partially changing the workspace.
 - Logical directory-size reports, read-only MCP shared-storage counters, global storage stats, GC, history squash and
   incremental engine-managed compaction; explicit whole-store maintenance remains available.
 - Incremental `repo_fetch` refreshes saved origins inside Fjall without moving existing workspaces.
+  It fetches all upstream branches/tags. Successful results include `timings_ms`
+  for repository/transfer waits, receiver preparation, transport, import,
+  publication and cleanup, plus decoded/reused import-object counts. A private
+  packed ref file avoids per-ref filesystem work; already stored objects gain
+  repository membership without decoding a redundant incoming copy.
 - Generated Goose recipe/config fragment, consumer `AGENTS.md` and native
   `PreToolUse` hook. Server instructions work with other stdio MCP clients too.
 

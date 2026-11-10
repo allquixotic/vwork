@@ -9,17 +9,50 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    io::Write,
     time::{Duration, Instant},
 };
 
+/// A receiver is private and disposable. Seed its sorted packed-refs directly
+/// before libgit2 reads refs; creating thousands of loose refs here needlessly
+/// multiplies file opens, locks, renames and antivirus work on every fetch.
+fn seed_refs(receiver: &git2::Repository, refs: &BTreeMap<String, String>) -> Result<()> {
+    let mut file =
+        std::io::BufWriter::new(std::fs::File::create(receiver.path().join("packed-refs"))?);
+    writeln!(file, "# pack-refs with: sorted")?;
+    for (name, oid) in refs {
+        if name == "HEAD" {
+            continue;
+        }
+        ensure!(
+            git2::Reference::is_valid_name(name) && name.starts_with("refs/"),
+            "invalid stored ref name"
+        );
+        writeln!(file, "{} {name}", git2::Oid::from_str(oid)?)?;
+    }
+    file.flush()?;
+    if let Some(head) = refs.get("HEAD") {
+        receiver.set_head_detached(git2::Oid::from_str(head)?)?;
+    }
+    Ok(())
+}
+
+fn milliseconds(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.
+}
+
 impl Engine {
     pub(crate) fn fetch_repository(&self, args: &Value) -> Result<Value> {
+        let started = Instant::now();
+        let mut timings = BTreeMap::new();
         let repo_id = args["repo"].as_str().context("missing repo")?;
         valid_id(repo_id)?;
         let lock = self.build_lock(repo_id);
         let _repository = lock
             .lock()
             .map_err(|_| anyhow::anyhow!("repository lock poisoned"))?;
+        timings.insert("repository_wait", milliseconds(started));
+        let source_started = Instant::now();
         let repo = self.repo(repo_id)?;
         let source = args["source"].as_str().map(String::from).or_else(|| repo.fetch_source.clone())
             .or_else(|| {
@@ -28,10 +61,14 @@ impl Engine {
             }).or_else(|| (!repo.path.as_os_str().is_empty() && repo.path.exists()).then(|| git::path_argument(&repo.path).to_string_lossy().into_owned()))
             .context("registration has no saved fetch source; supply source once (Git URL or absolute repository path)")?;
         let source = git::clone_source(&source)?;
+        timings.insert("source", milliseconds(source_started));
+        let transfer_started = Instant::now();
         let _transfer = self
             .transfer_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("transfer lock poisoned"))?;
+        timings.insert("transfer_wait", milliseconds(transfer_started));
+        let prepare_started = Instant::now();
         ensure!(
             self.scan("transfer/")?.len() < self.config.max_temporary_copies,
             "pending transfer cleanup limit reached; inspect temporary_list"
@@ -51,19 +88,9 @@ impl Engine {
             init.bare(true).external_template(false);
             let receiver = git2::Repository::init_opts(path.join("pack"), &init)?;
             git_store::attach_readonly(&receiver.odb()?, self.db.clone(), repo_id)?;
-            for (name, oid) in &repo.refs {
-                if name != "HEAD" {
-                    receiver.reference(
-                        name,
-                        git2::Oid::from_str(oid)?,
-                        true,
-                        "vwork fetch negotiation",
-                    )?;
-                }
-            }
-            if let Some(head) = repo.refs.get("HEAD") {
-                receiver.set_head_detached(git2::Oid::from_str(head)?)?;
-            }
+            seed_refs(&receiver, &repo.refs)?;
+            timings.insert("prepare", milliseconds(prepare_started));
+            let transport_started = Instant::now();
             let mut remote = receiver.remote_anonymous(&source)?;
             let deadline = Instant::now() + Duration::from_secs(self.config.task_timeout_seconds);
             let mut callbacks = git2::RemoteCallbacks::new();
@@ -101,6 +128,8 @@ impl Engine {
                 Some(&mut options),
                 None,
             )?;
+            timings.insert("transport", milliseconds(transport_started));
+            let import_started = Instant::now();
             let received_objects = remote.stats().received_objects();
             let received_bytes = remote.stats().received_bytes();
             let mut fetched = BTreeMap::new();
@@ -122,15 +151,17 @@ impl Engine {
                 }
             }
             // Enumeration omits the read-through backend, so only newly received
-            // packs are imported. Publication waits for all objects to be durable.
-            let mut imported = repo.clone();
-            git::import(
+            // packs are imported. References publish after successful import;
+            // ordinary writes retain the engine's bounded buffered durability.
+            let imported = git::import_objects(
                 &self.db,
                 &receiver,
-                &mut imported,
+                repo_id,
                 self.config.compression_level,
                 self.config.task_timeout_seconds,
             )?;
+            timings.insert("import", milliseconds(import_started));
+            let publish_started = Instant::now();
             for oid in fetched.values() {
                 ensure!(
                     git_store::contains(&self.db, repo_id, git2::Oid::from_str(oid)?)?,
@@ -162,11 +193,19 @@ impl Engine {
                 updated = current;
             }
             transaction.commit()?;
+            timings.insert("publish", milliseconds(publish_started));
             Ok(
-                json!({"repo":repo_id,"head":updated.refs.get("HEAD"),"received_objects":received_objects,"received_bytes":received_bytes,"storage":"Fjall","workspaces_changed":false,"note":"Existing workspaces stay pinned; create a workspace from the fetched reference to use the updated source"}),
+                json!({"repo":repo_id,"head":updated.refs.get("HEAD"),"received_objects":received_objects,"received_bytes":received_bytes,"import":imported,"storage":"Fjall","workspaces_changed":false,"note":"Existing workspaces stay pinned; create a workspace from the fetched reference to use the updated source"}),
             )
         })();
+        let cleanup_started = Instant::now();
         let cleanup = self.remove_transfer(&transfer);
+        timings.insert("cleanup", milliseconds(cleanup_started));
+        timings.insert("total", milliseconds(started));
+        let result = result.map(|mut value| {
+            value["timings_ms"] = json!(timings);
+            value
+        });
         match (result, cleanup) {
             (Ok(mut value), Err(error)) => {
                 value["cleanup_pending"] = json!(error.to_string());
@@ -175,5 +214,57 @@ impl Engine {
             (Err(error), _) => Err(error),
             (Ok(value), Ok(())) => Ok(value),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v40_negotiation_refs_use_one_packed_file() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receiver = git2::Repository::init_bare(temp.path())?;
+        let oid = receiver.blob(b"reference fixture")?.to_string();
+        let mut refs = BTreeMap::new();
+        for n in 0..1000 {
+            refs.insert(format!("refs/heads/topic/{n:04}"), oid.clone());
+        }
+        refs.insert("refs/tags/annotated".into(), oid.clone());
+        refs.insert("refs/vwork/private".into(), oid.clone());
+        seed_refs(&receiver, &refs)?;
+        assert_eq!(receiver.references()?.count(), refs.len());
+        for (name, id) in refs {
+            assert_eq!(
+                receiver.find_reference(&name)?.target(),
+                Some(git2::Oid::from_str(&id)?)
+            );
+        }
+        assert_eq!(
+            walkdir::WalkDir::new(receiver.path().join("refs"))
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .count(),
+            0
+        );
+        assert_eq!(
+            walkdir::WalkDir::new(receiver.path())
+                .into_iter()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name() == "packed-refs")
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn v40_negotiation_refs_reject_injected_records() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let receiver = git2::Repository::init_bare(temp.path())?;
+        let refs = BTreeMap::from([("refs/heads/bad\nrefs/heads/injected".into(), "1".repeat(40))]);
+        assert!(seed_refs(&receiver, &refs).is_err());
+        Ok(())
     }
 }

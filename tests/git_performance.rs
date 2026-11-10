@@ -5,6 +5,43 @@ use git2::{Oid, Repository, Signature, Time};
 use serde_json::json;
 use vwork::{engine::Engine, model::Config};
 
+#[test]
+fn v40_duplicate_import_links_membership_without_reading_source_payloads() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    let ids = history(&source, 1)?;
+    let engine = Engine::open(temp.path().join("store"), Config::default())?;
+    engine.call("repo_register", &json!({"repo":"fixture","path":source}))?;
+    let repo = Repository::open(&source)?;
+    let blob = repo
+        .find_commit(ids[0])?
+        .tree()?
+        .get_name("file-0.txt")
+        .unwrap()
+        .id();
+    let id = blob.to_string();
+    // This OID already has verified immutable content in Fjall. Enumerating
+    // another source must link membership using metadata, without inflating
+    // its redundant copy. The deliberately unreadable duplicate proves that.
+    let duplicate = repo.path().join("objects").join(&id[..2]).join(&id[2..]);
+    #[cfg(windows)]
+    {
+        let mut permissions = std::fs::metadata(&duplicate)?.permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&duplicate, permissions)?;
+    }
+    std::fs::write(duplicate, b"unreadable duplicate")?;
+    let mut imported = engine.repo("fixture")?;
+    imported.id = "shared".into();
+    vwork::git::import(&engine.db, &repo, &mut imported, 3, 60)?;
+    assert!(vwork::git_store::contains(&engine.db, "shared", blob)?);
+    assert_eq!(
+        vwork::git_store::read(&engine.db, blob)?.1,
+        b"base file 0\n"
+    );
+    Ok(())
+}
+
 fn history(root: &std::path::Path, count: usize) -> Result<Vec<Oid>> {
     let repo = Repository::init(root)?;
     let mut ids = Vec::new();
