@@ -20,6 +20,13 @@ pub struct Config {
     pub temporary_max_ttl_seconds: u64,
     pub max_temporary_copies: usize,
     pub max_recovery_bytes: u64,
+    /// Read every materialized file back on reuse instead of trusting recorded
+    /// metadata. Costs one open and read per file per operation.
+    pub verify_materialized_content: bool,
+    /// How long a released tree stays available for the next temporary copy
+    /// of its repository. Pooled trees count toward `max_temporary_copies`.
+    /// Zero deletes on release.
+    pub pooled_tree_ttl_seconds: u64,
     /// Legacy redb scheduling fields; Fjall manages background compaction.
     pub auto_compact: bool,
     pub compact_interval_seconds: u64,
@@ -41,6 +48,8 @@ impl Default for Config {
             temporary_max_ttl_seconds: 86400,
             max_temporary_copies: 4,
             max_recovery_bytes: 128 * 1024 * 1024,
+            verify_materialized_content: false,
+            pooled_tree_ttl_seconds: 14_400,
             auto_compact: true,
             compact_interval_seconds: 3600,
             compact_idle_seconds: 300,

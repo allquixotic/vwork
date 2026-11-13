@@ -2133,3 +2133,452 @@ fn v38_lazy_squash_preserves_deletions_and_status() -> Result<()> {
     );
     Ok(())
 }
+
+/// Reuse compares recorded metadata from directory listings; only files that
+/// changed on either side are opened, and generated files are left alone.
+#[test]
+fn v43_reuse_opens_only_what_changed() -> Result<()> {
+    let f = Fixture::new();
+    let edits: Vec<Value> = (0..80)
+        .map(|n| json!({"path":format!("pkg/part-{}/file-{n}.txt", n % 7),"content":format!("content {n}\n")}))
+        .collect();
+    f.engine.call(
+        "files_apply_patch",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"edits":edits}),
+    )?;
+    let dest = f._temp.path().join("export");
+    let export = || {
+        f.engine.call(
+            "workspace_export",
+            &json!({"workspace":"one","destination":dest}),
+        )
+    };
+    let first = export()?;
+    let files = first["files"].as_u64().unwrap();
+    assert_eq!(files, 83);
+    assert_eq!(first["written"], files);
+    assert_eq!(first["reused"], 0);
+    let unchanged = export()?;
+    assert_eq!(unchanged["written"], 0);
+    assert_eq!(unchanged["verified"], 0);
+    assert_eq!(unchanged["reused"], files);
+
+    // A tool rewrites one file and deletes another; a virtual edit changes a
+    // third and removes a fourth. Build output appears beside the sources.
+    std::fs::write(dest.join("pkg/part-1/file-1.txt"), "tool changed this\n")?;
+    std::fs::remove_file(dest.join("pkg/part-2/file-2.txt"))?;
+    std::fs::create_dir_all(dest.join("pkg/part-1/target"))?;
+    std::fs::write(dest.join("pkg/part-1/target/output.bin"), b"generated")?;
+    f.engine.call(
+        "files_apply_patch",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"edits":[
+            {"path":"pkg/part-3/file-3.txt","content":"virtual edit\n"},
+            {"path":"pkg/part-4/file-4.txt","delete":true}
+        ]}),
+    )?;
+    let third = export()?;
+    assert_eq!(third["written"], 3);
+    assert_eq!(third["removed"], 1);
+    assert_eq!(third["reused"], files - 4);
+    assert_eq!(
+        std::fs::read_to_string(dest.join("pkg/part-1/file-1.txt"))?,
+        "content 1\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest.join("pkg/part-2/file-2.txt"))?,
+        "content 2\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dest.join("pkg/part-3/file-3.txt"))?,
+        "virtual edit\n"
+    );
+    assert!(!dest.join("pkg/part-4/file-4.txt").exists());
+    assert_eq!(
+        std::fs::read(dest.join("pkg/part-1/target/output.bin"))?,
+        b"generated"
+    );
+
+    // Same length, new content: the write moves the modification time.
+    let same_size = dest.join("pkg/part-5/file-5.txt");
+    std::fs::write(&same_size, "CONTENT 5\n")?;
+    std::fs::File::options()
+        .write(true)
+        .open(&same_size)?
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))?;
+    // Touched but identical: metadata differs, content settles it, no rewrite.
+    let touched = dest.join("pkg/part-6/file-6.txt");
+    std::fs::File::options()
+        .write(true)
+        .open(&touched)?
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))?;
+    let fourth = export()?;
+    assert_eq!(fourth["written"], 1);
+    assert_eq!(fourth["verified"], 1);
+    assert_eq!(std::fs::read_to_string(&same_size)?, "content 5\n");
+
+    #[cfg(unix)]
+    {
+        // A link planted where vwork expects its own file is never followed.
+        let outside = f._temp.path().join("outside.txt");
+        std::fs::write(&outside, "outside")?;
+        let planted = dest.join("pkg/part-0/file-0.txt");
+        std::fs::remove_file(&planted)?;
+        std::os::unix::fs::symlink(&outside, &planted)?;
+        assert!(export().is_err());
+        assert_eq!(std::fs::read_to_string(&outside)?, "outside");
+    }
+    Ok(())
+}
+
+/// Strict mode reads every file back: it catches an in-place edit that keeps
+/// both length and modification time, which recorded metadata alone cannot
+/// see on filesystems without a change time.
+#[test]
+fn v43_strict_materialization_reads_content() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("repo");
+    std::fs::create_dir_all(&root)?;
+    std::fs::write(root.join("a.txt"), "original\n")?;
+    std::fs::write(root.join("b.txt"), "untouched\n")?;
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.name", "Vwork Test"]);
+    git(&root, &["config", "user.email", "test@example.invalid"]);
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "base"]);
+    let engine = Engine::open(
+        temp.path().join("state"),
+        Config {
+            verify_materialized_content: true,
+            ..Config::default()
+        },
+    )?;
+    engine.call("repo_register", &json!({"repo":"repo","path":root}))?;
+    engine.call(
+        "workspace_create",
+        &json!({"repo":"repo","workspace":"one"}),
+    )?;
+    let dest = temp.path().join("export");
+    let export = || {
+        engine.call(
+            "workspace_export",
+            &json!({"workspace":"one","destination":dest}),
+        )
+    };
+    export()?;
+    let file = dest.join("a.txt");
+    let recorded = std::fs::metadata(&file)?.modified()?;
+    std::fs::write(&file, "ORIGINAL\n")?;
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_modified(recorded)?;
+    let again = export()?;
+    assert_eq!(again["reused"], 0);
+    assert_eq!(again["written"], 1);
+    assert_eq!(again["verified"], 1);
+    assert_eq!(std::fs::read_to_string(&file)?, "original\n");
+    Ok(())
+}
+
+/// Copies made before metadata was recorded carry none; recovery then reads
+/// every tracked file, as it always did, and still finds the edit.
+#[test]
+fn v43_recovery_reads_copies_without_recorded_metadata() -> Result<()> {
+    let f = Fixture::new();
+    let lease = f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"legacy record fixture"}))?;
+    let root = PathBuf::from(lease["path"].as_str().unwrap());
+    let marker = root.join(".vwork-managed.json");
+    let mut record: Value = serde_json::from_slice(&std::fs::read(&marker)?)?;
+    assert_eq!(
+        record["stat"].as_array().unwrap().len(),
+        record["entries"].as_object().unwrap().len()
+    );
+    record.as_object_mut().unwrap().remove("stat");
+    std::fs::write(&marker, serde_json::to_vec_pretty(&record)?)?;
+    std::fs::write(root.join("src/a.rs"), "fn edited() {}\n")?;
+    let released = f
+        .engine
+        .call("temporary_release", &json!({"lease":lease["id"]}))?;
+    let recovery = &released["recovery_workspace"];
+    assert!(recovery.is_string(), "{released}");
+    assert_eq!(
+        f.engine.call(
+            "files_read",
+            &json!({"workspace":recovery,"path":"src/a.rs"})
+        )?["content"],
+        "fn edited() {}"
+    );
+    assert!(!root.exists());
+    Ok(())
+}
+
+/// With the record, recovery finds edits, additions and deletions from
+/// metadata, and an untouched copy yields no recovery workspace at all.
+#[test]
+fn v43_recovery_from_recorded_metadata() -> Result<()> {
+    let f = Fixture::new();
+    let temporary = || {
+        f.engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":f.head("one"),"purpose":"metadata recovery fixture"}))
+    };
+    let untouched = temporary()?;
+    let released = f
+        .engine
+        .call("temporary_release", &json!({"lease":untouched["id"]}))?;
+    assert!(released["recovery_workspace"].is_null(), "{released}");
+
+    let lease = temporary()?;
+    let root = PathBuf::from(lease["path"].as_str().unwrap());
+    std::fs::write(root.join("src/a.rs"), "fn edited() {}\n")?;
+    std::fs::remove_file(root.join("README.md"))?;
+    std::fs::write(root.join("src/new.rs"), "fn added() {}\n")?;
+    let released = f
+        .engine
+        .call("temporary_release", &json!({"lease":lease["id"]}))?;
+    let recovery = released["recovery_workspace"].as_str().unwrap();
+    let read = |path: &str| {
+        f.engine
+            .call("files_read", &json!({"workspace":recovery,"path":path}))
+    };
+    assert_eq!(read("src/a.rs")?["content"], "fn edited() {}");
+    assert_eq!(read("src/new.rs")?["content"], "fn added() {}");
+    assert!(read("README.md").is_err());
+    assert_eq!(
+        f.engine.call(
+            "files_read",
+            &json!({"workspace":recovery,"path":"binary.dat","binary":true})
+        )?["base64"],
+        "AAH/Ag=="
+    );
+    assert_eq!(f.read("one", "README.md"), "base");
+    Ok(())
+}
+
+/// A released tree is renamed aside, not deleted file by file; the next copy
+/// of that repository adopts it, rewrites only what differs, and receives a
+/// tree with nothing in it that vwork did not write.
+#[test]
+fn v44_released_trees_are_adopted_pristine() -> Result<()> {
+    let f = Fixture::new();
+    let edits: Vec<Value> = (0..80)
+        .map(|n| json!({"path":format!("pkg/part-{}/file-{n}.txt", n % 7),"content":format!("content {n}\n")}))
+        .collect();
+    f.engine.call(
+        "files_apply_patch",
+        &json!({"workspace":"one","expected_revision":f.head("one"),"edits":edits}),
+    )?;
+    let temporary = |workspace: &str| {
+        f.engine.call("workspace_temporary", &json!({"workspace":workspace,"expected_revision":f.head(workspace),"purpose":"pool fixture"}))
+    };
+    let pooled = || {
+        f.engine.call("temporary_list", &json!({})).unwrap()["pooled"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let first = temporary("one")?;
+    assert_eq!(first["work"]["files"]["adopted_pooled_tree"], false);
+    assert_eq!(first["work"]["files"]["written"], 83);
+    let old = PathBuf::from(first["path"].as_str().unwrap());
+    // What a build leaves behind: an edited source, a deleted one, generated
+    // files beside sources, a dependency tree, and a directory over a file.
+    std::fs::write(old.join("pkg/part-1/file-1.txt"), "tool changed this\n")?;
+    std::fs::remove_file(old.join("pkg/part-2/file-2.txt"))?;
+    std::fs::write(
+        old.join("pkg/part-1/secret.env"),
+        "TOKEN=from-workspace-one",
+    )?;
+    std::fs::create_dir_all(old.join("node_modules/dep/lib"))?;
+    std::fs::write(old.join("node_modules/dep/lib/index.js"), "generated")?;
+    std::fs::remove_file(old.join("pkg/part-5/file-5.txt"))?;
+    std::fs::create_dir_all(old.join("pkg/part-5/file-5.txt/nested"))?;
+    f.engine.call(
+        "temporary_release",
+        &json!({"lease":first["id"],"discard_changes":true}),
+    )?;
+    assert!(!old.exists());
+    assert_eq!(pooled(), 1);
+
+    f.engine
+        .call("workspace_fork", &json!({"workspace":"one","name":"two"}))?;
+    f.engine.call(
+        "files_apply_patch",
+        &json!({"workspace":"two","expected_revision":f.head("two"),"edits":[
+            {"path":"pkg/part-3/file-3.txt","content":"virtual edit\n"},
+            {"path":"pkg/part-4/file-4.txt","delete":true},
+            {"path":"fresh/added.txt","content":"added\n"}
+        ]}),
+    )?;
+    let second = temporary("two")?;
+    let files = &second["work"]["files"];
+    assert_eq!(files["adopted_pooled_tree"], true);
+    // Edited, deleted and obstructed sources, the virtual edit and addition.
+    assert_eq!(files["written"], 5);
+    assert_eq!(files["reused"], 83 - 1 + 1 - 5);
+    // secret.env, node_modules, the directory over file-5, deleted file-4.
+    assert_eq!(files["removed"], 4);
+    assert_eq!(pooled(), 0);
+    let tree = PathBuf::from(second["path"].as_str().unwrap());
+    let expected = f
+        .engine
+        .call("files_list", &json!({"workspace":"two","limit":1000}))?;
+    let mut physical: Vec<String> = walkdir::WalkDir::new(&tree)
+        .into_iter()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| {
+            entry
+                .path()
+                .strip_prefix(&tree)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .filter(|path| path != ".git" && path != ".vwork-managed.json")
+        .collect();
+    physical.sort();
+    let mut tracked: Vec<String> = expected["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap().to_string())
+        .collect();
+    tracked.sort();
+    assert_eq!(physical, tracked, "nothing foreign, nothing missing");
+    for path in &tracked {
+        let stored = f.engine.call(
+            "files_read",
+            &json!({"workspace":"two","path":path,"binary":true}),
+        )?;
+        use base64::Engine as _;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.encode(std::fs::read(tree.join(path))?),
+            stored["base64"].as_str().unwrap(),
+            "{path}"
+        );
+    }
+    assert!(!tree.join("node_modules").exists());
+    // Git agrees without rereading: every virtual addition staged against
+    // the base commit, nothing modified in the tree, nothing untracked.
+    let status = git(&tree, &["status", "--porcelain", "--untracked-files=all"]);
+    assert_eq!(status.lines().count(), 80);
+    assert!(
+        status.lines().all(|line| line.starts_with("A  ")),
+        "{status}"
+    );
+    git(&tree, &["fsck", "--full"]);
+    f.engine.call(
+        "temporary_release",
+        &json!({"lease":second["id"],"discard_changes":true}),
+    )?;
+    assert_eq!(pooled(), 1);
+
+    // A pooled tree that cannot be vouched for is a cache miss, not a failure.
+    let slot = walkdir::WalkDir::new(f.home.join("pool"))
+        .into_iter()
+        .map(|entry| entry.unwrap().into_path())
+        .find(|path| path.ends_with(".vwork-pooled.json"))
+        .unwrap();
+    std::fs::write(slot, "not a record")?;
+    let third = temporary("two")?;
+    assert_eq!(third["work"]["files"]["adopted_pooled_tree"], false);
+    assert_eq!(third["work"]["files"]["written"], 83);
+    assert_eq!(pooled(), 0);
+    assert_eq!(
+        git(
+            std::path::Path::new(third["path"].as_str().unwrap()),
+            &["status", "--porcelain", "--untracked-files=all"]
+        )
+        .lines()
+        .count(),
+        80
+    );
+    Ok(())
+}
+
+/// Pooled trees are physical copies: they share the copy limit with leases,
+/// yield to them, expire, and can be switched off.
+#[test]
+fn v44_pooled_trees_are_bounded_and_expire() -> Result<()> {
+    let open = |home: &std::path::Path, ttl: u64| {
+        Engine::open(
+            home,
+            Config {
+                pooled_tree_ttl_seconds: ttl,
+                ..Config::default()
+            },
+        )
+    };
+    let Fixture {
+        engine,
+        home,
+        root,
+        _temp,
+    } = Fixture::new();
+    drop(engine);
+    let engine = open(&home, 3600)?;
+    let limit = engine.config.max_temporary_copies;
+    let head = |workspace: &str| engine.workspace(workspace).unwrap().head;
+    let temporary = |workspace: &str| {
+        engine.call("workspace_temporary", &json!({"workspace":workspace,"expected_revision":head(workspace),"purpose":"pool bound fixture"}))
+    };
+    let release = |lease: &Value| {
+        engine
+            .call(
+                "temporary_release",
+                &json!({"lease":lease["id"],"discard_changes":true}),
+            )
+            .unwrap();
+    };
+    let pooled = |engine: &Engine| {
+        engine.call("temporary_list", &json!({})).unwrap()["pooled"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let leases: Vec<Value> = (0..limit).map(|_| temporary("one").unwrap()).collect();
+    for lease in &leases {
+        release(lease);
+    }
+    assert_eq!(pooled(&engine), limit);
+    // Another repository's leases displace pooled trees one for one.
+    engine.call("repo_register", &json!({"repo":"other","path":root}))?;
+    engine.call(
+        "workspace_create",
+        &json!({"repo":"other","workspace":"elsewhere"}),
+    )?;
+    let others: Vec<Value> = (0..limit)
+        .map(|_| temporary("elsewhere").unwrap())
+        .collect();
+    assert_eq!(pooled(&engine), 0);
+    assert!(
+        temporary("elsewhere").is_err(),
+        "the copy limit still holds"
+    );
+    for lease in &others {
+        release(lease);
+    }
+    assert_eq!(pooled(&engine), limit);
+    drop(engine);
+
+    let engine = open(&home, 1)?;
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    engine.reap_temporary()?;
+    assert_eq!(pooled(&engine), 0);
+    drop(engine);
+
+    let engine = open(&home, 0)?;
+    let lease = engine.call("workspace_temporary", &json!({"workspace":"one","expected_revision":engine.workspace("one")?.head,"purpose":"pool disabled"}))?;
+    engine.call(
+        "temporary_release",
+        &json!({"lease":lease["id"],"discard_changes":true}),
+    )?;
+    assert_eq!(pooled(&engine), 0);
+    assert!(
+        !home
+            .join("temporary")
+            .join(lease["id"].as_str().unwrap())
+            .exists()
+    );
+    drop(_temp);
+    Ok(())
+}

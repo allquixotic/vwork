@@ -9,7 +9,6 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io::Write,
     time::{Duration, Instant},
 };
 
@@ -17,20 +16,7 @@ use std::{
 /// before libgit2 reads refs; creating thousands of loose refs here needlessly
 /// multiplies file opens, locks, renames and antivirus work on every fetch.
 fn seed_refs(receiver: &git2::Repository, refs: &BTreeMap<String, String>) -> Result<()> {
-    let mut file =
-        std::io::BufWriter::new(std::fs::File::create(receiver.path().join("packed-refs"))?);
-    writeln!(file, "# pack-refs with: sorted")?;
-    for (name, oid) in refs {
-        if name == "HEAD" {
-            continue;
-        }
-        ensure!(
-            git2::Reference::is_valid_name(name) && name.starts_with("refs/"),
-            "invalid stored ref name"
-        );
-        writeln!(file, "{} {name}", git2::Oid::from_str(oid)?)?;
-    }
-    file.flush()?;
+    git::write_packed_refs(receiver.path(), refs)?;
     if let Some(head) = refs.get("HEAD") {
         receiver.set_head_detached(git2::Oid::from_str(head)?)?;
     }

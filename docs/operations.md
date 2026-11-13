@@ -27,8 +27,8 @@ Use forward slashes for all **virtual** paths, on every OS.
 | `repo_register` | `repo`, `path` | Import existing repository objects/refs into Fjall |
 | `repo_fetch` | `repo`, optional `source`, `prune` | Refresh saved origin using incremental libgit2 transfer; atomically update refs, preserve workspace snapshots |
 | `repo_clone` | `repo`, `source` | Clone a selected URL or local repo into Fjall |
-| `workspace_temporary` | `expected_revision`, `purpose`, optional `ttl_seconds` | Tracked temporary filesystem copy |
-| `temporary_list` | none | Active copies, cleanup failures, transfer staging, recent recovery workspaces |
+| `workspace_temporary` | `expected_revision`, `purpose`, optional `ttl_seconds` | Tracked temporary filesystem copy; result includes `timings_ms` and a `work` receipt |
+| `temporary_list` | none | Active copies, cleanup failures, transfer staging, pooled trees, recent recovery workspaces |
 | `temporary_renew` | `lease`, optional `ttl_seconds` | Renew while a tool still needs a copy |
 | `temporary_release` | `lease`, optional `discard_changes` | Save bounded source recovery, remove physical copy; intentional discard is explicit |
 | `repo_log` | `repo`, optional `reference`, `limit` | Actual Git history |
@@ -174,7 +174,10 @@ failed unpublished imports. Registered Git objects remain shared by object ID.
 
 Use `temporary_list` and `temporary_release` to reclaim physical copies. Builds
 and packages return lease IDs; their environments, outputs and private Git stores
-are removed together. Expiry/startup cleanup provides a fallback. Import wanted
+are removed together. A released source tree stays in `pool/` for the next copy
+of its repository, within the same copy limit, until `pooled_tree_ttl_seconds`
+passes; `git-cache/` holds each repository's history once for all copies. Both
+are derived and may be deleted while the owner is stopped. Expiry/startup cleanup provides a fallback. Import wanted
 source edits and save artifacts first. Cleanup errors retain their journal and
 allocation slot for retry; inspect them instead of allocating unlimited copies.
 Durable `workspace_export` destinations and global package caches remain explicit.

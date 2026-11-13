@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2
+
+- Temporary copies cost what differs, not what the repository weighs. History is exported from Fjall once per repository into shared immutable packs that every lease hard-links; refs are one `packed-refs` file; the index is written directly with file metadata.
+- Released source trees are pooled and adopted by the next copy of the same repository, which rewrites only changed files and moves foreign files out by rename. Pooled trees share `max_temporary_copies` and expire after `pooled_tree_ttl_seconds`.
+- Materialization, reuse and recovery compare recorded metadata from one listing per directory instead of opening every file; new trees are written by several workers with one open per file. `verify_materialized_content` restores read-back verification.
+- Release renames trees into `trash/` and deletes in the background.
+- `workspace_temporary` reports `timings_ms` and a `work` receipt; `workspace_export` reports written, reused, verified and removed counts.
+- Measured on an 874 MB, 197,819-object, 963-ref repository with a 286 MB tree (macOS, no scanner): 153.8 s and 1.3 GB written per copy before; 23.9 s once per repository, then 0.32 s for a new tree and 0.05 s for an adopted one, writing about 1 MB.
+
 ## 0.3.4
 
 - Explicitly release snapshot and startup locks so inherited file descriptors cannot cause spurious database-in-use failures during reopening.

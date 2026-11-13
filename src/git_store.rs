@@ -531,10 +531,24 @@ pub fn contains(db: &Database, repo: &str, oid: Oid) -> Result<bool> {
 }
 
 pub fn members(db: &Database, repo: &str) -> Result<Vec<Oid>> {
+    member_keys(db, repo, &[MEMBERS, OVERLAYS])
+}
+
+/// Imported and committed history only. Overlay blobs are private to the
+/// workspaces that wrote them and may disappear when those are dropped.
+pub fn permanent_members(db: &Database, repo: &str) -> Result<Vec<Oid>> {
+    member_keys(db, repo, &[MEMBERS])
+}
+
+fn member_keys(
+    db: &Database,
+    repo: &str,
+    tables: &[TableDefinition<&str, &[u8]>],
+) -> Result<Vec<Oid>> {
     let prefix = format!("{repo}/");
     let tx = db.begin_read()?;
     let mut ids = std::collections::BTreeSet::new();
-    for definition in [MEMBERS, OVERLAYS] {
+    for definition in tables.iter().copied() {
         let table = tx.open_table(definition)?;
         for item in table.range(prefix.as_str()..)? {
             let (k, _) = item?;

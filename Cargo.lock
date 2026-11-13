@@ -1301,6 +1301,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1_smol"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d"
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1641,7 +1647,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vwork"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1650,6 +1656,7 @@ dependencies = [
  "ctrlc",
  "dirs",
  "fjall",
+ "flate2",
  "fs2",
  "git2",
  "globset",
@@ -1661,6 +1668,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha1_smol",
  "shlex",
  "similar",
  "system-idle-time",

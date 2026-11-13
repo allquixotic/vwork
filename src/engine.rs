@@ -3,6 +3,7 @@ use crate::{
     git, git_store,
     model::*,
     packages::{self, Project, Step},
+    physical,
 };
 use anyhow::{Context, Result, bail, ensure};
 use base64::Engine as _;
@@ -21,6 +22,20 @@ enum BuildRequest {
 }
 
 pub(crate) const RECORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("records_v1");
+
+/// What a materialization did, and the metadata of every file it owns.
+#[derive(Default, Debug)]
+pub struct Materialized {
+    /// Files created or rewritten.
+    pub written: usize,
+    /// Files accepted from recorded metadata, without opening them.
+    pub reused: usize,
+    /// Files whose metadata had changed but whose content still matched.
+    pub verified: usize,
+    pub removed: usize,
+    pub bytes: u64,
+    pub stats: BTreeMap<String, physical::FileStat>,
+}
 
 pub struct Engine {
     pub db: Arc<Database>,
@@ -1172,8 +1187,10 @@ impl Engine {
                 let _guard = lock
                     .lock()
                     .map_err(|_| anyhow::anyhow!("build lock poisoned"))?;
-                self.materialize(&ws, &selected, &dest)?;
-                Ok(json!({"destination":dest,"revision":ws.head,"files":selected.len()}))
+                let done = self.materialize(&ws, &selected, &dest)?;
+                Ok(
+                    json!({"destination":dest,"revision":ws.head,"files":selected.len(),"written":done.written,"reused":done.reused,"verified":done.verified,"removed":done.removed}),
+                )
             }
             "workspace_import" => self.import(&ws, a, &tree),
             "workspace_run_task" => self.run_task(&ws, a, &tree),
@@ -1392,7 +1409,26 @@ impl Engine {
             .clone()
     }
 
-    pub fn materialize(&self, ws: &Workspace, tree: &Tree, dest: &Path) -> Result<()> {
+    /// Bring `dest` to exactly `tree`, touching only what differs.
+    ///
+    /// A fresh destination costs one create per file, spread over a few
+    /// workers. A destination this home already materialized is compared by
+    /// directory listing against the metadata recorded when its files were
+    /// written; only files that changed on either side are opened.
+    pub fn materialize(&self, ws: &Workspace, tree: &Tree, dest: &Path) -> Result<Materialized> {
+        self.materialize_into(ws, tree, dest, false)
+    }
+
+    /// `pooled`: `dest` is a released tree of this repository taken from the
+    /// pool. It is brought to `tree` like any reuse, and additionally made
+    /// pristine: everything vwork did not write there is moved out by name.
+    pub(crate) fn materialize_into(
+        &self,
+        ws: &Workspace,
+        tree: &Tree,
+        dest: &Path,
+        pooled: bool,
+    ) -> Result<Materialized> {
         Self::validate_tree(tree, true)?;
         ensure!(dest.is_absolute(), "destination must be absolute");
         ensure!(
@@ -1416,31 +1452,45 @@ impl Engine {
         }
         std::fs::create_dir_all(dest)?;
         let dest = dest.canonicalize()?;
-        let marker = dest.join(".vwork-managed.json");
+        let marker = dest.join(physical::MARKER);
         safe_ancestors(&marker)?;
-        let previous: Tree = if marker.exists() {
-            let state: Value = serde_json::from_slice(&std::fs::read(&marker)?)?;
+        let waiting = dest.join(physical::POOLED);
+        let record = if pooled || marker.exists() {
+            let record = physical::Marker::read(if pooled { &waiting } else { &marker })?;
             ensure!(
-                state.get("home").and_then(Value::as_str) == self.home.to_str()
-                    && state.get("repo").and_then(Value::as_str) == Some(&ws.repo),
+                record.home.as_deref() == self.home.to_str()
+                    && record.repo.as_deref() == Some(&ws.repo),
                 "export belongs to another vwork home or repository"
             );
-            serde_json::from_value(state["entries"].clone())?
+            Some(record)
         } else {
             ensure!(
                 std::fs::read_dir(&dest)?.next().is_none(),
                 "destination must be empty or a vwork-managed export"
             );
-            Tree::new()
+            None
         };
-        Self::validate_tree(&previous, true)?;
+        let empty = Tree::new();
+        let previous = record.as_ref().map_or(&empty, |record| &record.entries);
+        Self::validate_tree(previous, true)?;
+        let recorded = record
+            .as_ref()
+            .map(physical::Marker::stats)
+            .unwrap_or_default();
+        let mut result = Materialized::default();
         let mut empty_dirs = BTreeSet::new();
-        for p in previous.keys().filter(|p| !tree.contains_key(*p)) {
+        // A pooled tree is cleared by listing below, whatever a tool left
+        // where these files used to be.
+        for p in previous
+            .keys()
+            .filter(|p| !pooled && !tree.contains_key(*p))
+        {
             let target = dest.join(p);
             safe_ancestors(&target)?;
             if target.exists() {
                 ensure!(!target.is_dir(), "tracked path became directory: {p}");
                 std::fs::remove_file(&target)?;
+                result.removed += 1;
             }
             let mut parent = target.parent();
             while let Some(dir) = parent {
@@ -1457,38 +1507,199 @@ impl Engine {
                 std::fs::remove_dir(dir)?;
             }
         }
-        let mut reader = None;
+        // One listing per tracked directory replaces a metadata call per
+        // ancestor of every file. A brand-new destination has nothing to list.
+        let directories = physical::directories(tree);
+        let present = if record.is_some() {
+            let found = physical::scan(&dest, tree, &directories, pooled)?;
+            if !found.foreign.is_empty() {
+                // One rename per foreign name, however much lies beneath it;
+                // deletion happens off this path.
+                let bin = self.trash_bin()?;
+                for (n, path) in found.foreign.iter().enumerate() {
+                    std::fs::rename(dest.join(path), bin.join(n.to_string()))
+                        .with_context(|| format!("clear pooled tree: {path}"))?;
+                }
+                result.removed += found.foreign.len();
+                Self::empty_trash(bin);
+            }
+            found.files
+        } else {
+            BTreeMap::new()
+        };
+        for directory in &directories {
+            match std::fs::create_dir(dest.join(directory)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Listed and checked above when reusing; otherwise this
+                    // name was not created by this materialization.
+                    ensure!(
+                        record.is_some(),
+                        "destination changed during materialization: {directory}"
+                    );
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut stats = BTreeMap::new();
+        let mut jobs = Vec::new();
         for (p, e) in tree {
-            let target = dest.join(p);
-            safe_ancestors(&target)?;
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
+            // Same entry, same file: not rewritten since vwork wrote it.
+            match present.get(p) {
+                Some(current)
+                    if !self.config.verify_materialized_content
+                        && previous.get(p) == Some(e)
+                        && recorded.get(p.as_str()) == Some(current) =>
+                {
+                    stats.insert(p.clone(), *current);
+                    result.reused += 1;
+                }
+                current => jobs.push((p, e, current.is_some())),
             }
-            let bytes = self.bytes(&repo, e, &mut reader)?;
-            // Recheck physical contents even when manifest is unchanged: tasks may modify source.
-            if std::fs::read(&target).ok().as_deref() != Some(bytes.as_slice()) {
-                ensure!(
-                    previous.contains_key(p) || !target.exists(),
-                    "refusing to overwrite untracked physical path: {p}"
-                );
-                std::fs::write(&target, bytes)?;
+        }
+        // Only a tree nothing has been built from may carry settled times: in
+        // a reused tree a rewritten source must look newer than old outputs.
+        let stamp = record.is_none().then(physical::settled_time);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let work = || -> Result<Vec<(usize, physical::FileStat, bool)>> {
+            use std::sync::atomic::Ordering;
+            let mut reader = None;
+            let mut done = Vec::new();
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                if i >= jobs.len() || failed.load(Ordering::Relaxed) {
+                    return Ok(done);
+                }
+                let (p, e, exists) = jobs[i];
+                let outcome = self
+                    .bytes(&repo, e, &mut reader)
+                    .and_then(|bytes| {
+                        Self::place(
+                            &dest.join(p),
+                            &bytes,
+                            e.mode == "100755",
+                            exists,
+                            previous.contains_key(p),
+                            stamp,
+                        )
+                    })
+                    .with_context(|| format!("materialize {p}"));
+                match outcome {
+                    Ok((stat, written)) => done.push((i, stat, written)),
+                    Err(error) => {
+                        failed.store(true, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                }
             }
+        };
+        // Waiting on the filesystem (and whatever inspects each new file)
+        // dominates; a few workers overlap those waits. Small sets stay inline.
+        let workers = if jobs.len() < 64 {
+            1
+        } else {
+            std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 8))
+        };
+        let batches: Vec<_> = if workers == 1 {
+            vec![work()]
+        } else {
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..workers).map(|_| scope.spawn(work)).collect();
+                handles
+                    .into_iter()
+                    .map(|handle| {
+                        handle.join().unwrap_or_else(|_| {
+                            Err(anyhow::anyhow!("materialization worker failed"))
+                        })
+                    })
+                    .collect()
+            })
+        };
+        for batch in batches {
+            for (i, stat, written) in batch? {
+                stats.insert(jobs[i].0.clone(), stat);
+                if written {
+                    result.written += 1;
+                    result.bytes += stat.size;
+                } else {
+                    result.verified += 1;
+                }
+            }
+        }
+        physical::MarkerRecord {
+            home: &self.home,
+            repo: &ws.repo,
+            workspace: &ws.id,
+            revision: &ws.head,
+            entries: tree,
+            stat: tree
+                .keys()
+                .map(|p| stats.get(p).copied().context("file not materialized"))
+                .collect::<Result<_>>()?,
+        }
+        .write(&marker)?;
+        if pooled {
+            std::fs::remove_file(waiting)?;
+        }
+        result.stats = stats;
+        Ok(result)
+    }
+
+    /// A fresh directory under the home's trash: renaming into it is how
+    /// anything large leaves a caller's path in constant time.
+    pub(crate) fn trash_bin(&self) -> Result<PathBuf> {
+        let bin = self.home.join("trash").join(id());
+        safe_ancestors(&bin)?;
+        std::fs::create_dir_all(&bin)?;
+        Ok(bin)
+    }
+    /// Delete off the caller's path. A crash leaves the directory for the
+    /// next reaper pass; nothing in the trash is ever read again.
+    pub(crate) fn empty_trash(bin: PathBuf) {
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_dir_all(bin);
+        });
+    }
+
+    /// Returns the file's metadata and whether it had to be written; false
+    /// means existing content already matched.
+    fn place(
+        target: &Path,
+        bytes: &[u8],
+        executable: bool,
+        exists: bool,
+        owned: bool,
+        stamp: Option<std::time::SystemTime>,
+    ) -> Result<(physical::FileStat, bool)> {
+        if !exists {
+            match physical::write(target, bytes, executable, false, stamp) {
+                Ok(stat) => return Ok((stat, true)),
+                // Present after all: a name differing only by case, or a file
+                // that appeared since the listing. Decide by content below.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        safe_ancestors(target)?;
+        // Metadata disagreed with the record, so only content can tell
+        // whether a task changed this file.
+        if std::fs::read(target).ok().as_deref() == Some(bytes) {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(
-                    &target,
-                    std::fs::Permissions::from_mode(if e.mode == "100755" { 0o755 } else { 0o644 }),
+                    target,
+                    std::fs::Permissions::from_mode(if executable { 0o755 } else { 0o644 }),
                 )?;
             }
+            return Ok((physical::FileStat::of(&std::fs::metadata(target)?), false));
         }
-        std::fs::write(
-            marker,
-            serde_json::to_vec_pretty(
-                &json!({"home":self.home,"repo":ws.repo,"workspace":ws.id,"revision":ws.head,"entries":tree}),
-            )?,
-        )?;
-        Ok(())
+        ensure!(owned, "refusing to overwrite untracked physical path");
+        Ok((
+            physical::write(target, bytes, executable, true, None)?,
+            true,
+        ))
     }
 
     fn import(&self, ws: &Workspace, a: &Value, tree: &Tree) -> Result<Value> {
@@ -1607,7 +1818,7 @@ impl Engine {
                 self.config.temporary_ttl_seconds,
             )?
         };
-        let view = self.prepare_lease(&mut lease, ws, tree)?;
+        let (view, _) = self.prepare_lease(&mut lease, ws, tree)?;
         let lease_root = self.lease_root(&lease);
         let dest = lease_root.join("tree");
         let admin = lease_root.join("git");
@@ -2039,6 +2250,22 @@ impl Engine {
             }
         }
         txn.commit()?;
+        // Shared history packs are derived from permanent membership, which
+        // only disappears with its repository. Nothing else can go stale.
+        let caches = self.home.join("git-cache");
+        if safe_ancestors(&caches).is_ok()
+            && let Ok(entries) = std::fs::read_dir(&caches)
+        {
+            for entry in entries.flatten() {
+                let registered = entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| valid_id(name).is_ok() && self.repo(name).is_ok());
+                if !registered {
+                    crate::git_cache::discard(&entry.path())?;
+                }
+            }
+        }
         Ok(
             json!({"removed_records":removed,"note":"Unreachable objects removed; Fjall reclaims obsolete segments during background compaction"}),
         )

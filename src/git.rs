@@ -2,6 +2,7 @@ use crate::kv::Database;
 use crate::{
     git_store,
     model::{Entry, Repository, Tree},
+    physical::FileStat,
 };
 use anyhow::{Context, Result, bail, ensure};
 use git2::{ObjectType, Oid};
@@ -470,137 +471,236 @@ pub fn log(db: &Arc<Database>, repo: &Repository, reference: &str, limit: usize)
     Ok(text)
 }
 
+/// One sorted packed-refs file instead of a lock, write and rename per ref.
+pub(crate) fn write_packed_refs(admin: &Path, refs: &BTreeMap<String, String>) -> Result<()> {
+    use std::io::Write;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(admin.join("packed-refs"))?);
+    writeln!(file, "# pack-refs with: sorted")?;
+    for (name, oid) in refs {
+        if name == "HEAD" {
+            continue;
+        }
+        ensure!(
+            git2::Reference::is_valid_name(name) && name.starts_with("refs/"),
+            "invalid stored ref name"
+        );
+        writeln!(file, "{} {name}", Oid::from_str(oid)?)?;
+    }
+    file.flush()?;
+    Ok(())
+}
+
+fn config_value(path: &Path) -> String {
+    let mut out = String::from("\"");
+    for c in path_argument(path).to_string_lossy().chars() {
+        match c {
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+const CONFIG_MARK: &str = "# vwork temporary view\n";
+
+/// Later sections override what libgit2's filesystem probe wrote, so the whole
+/// view configuration is one append instead of a rewrite per key.
+fn view_config(admin: &Path, checkout: &Path) -> Result<()> {
+    let path = admin.join("config");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let block = format!(
+        "{CONFIG_MARK}[core]\n\tbare = false\n\tautocrlf = false\n\tsymlinks = false\n\tlogallrefupdates = false\n\tfilemode = {}\n\ttrustctime = false\n\tcheckstat = minimal\n\tworktree = {}\n\thookspath = {}\n[gc]\n\tauto = 0\n",
+        !cfg!(windows),
+        config_value(checkout),
+        config_value(&admin.join("disabled-hooks")),
+    );
+    let probed = existing.split(CONFIG_MARK).next().unwrap_or_default();
+    let wanted = format!("{probed}{block}");
+    if existing != wanted {
+        std::fs::write(path, wanted)?;
+    }
+    Ok(())
+}
+
+/// Version 2 index written directly: entries are already sorted and their
+/// objects already checked, so there is nothing for a tree walk to add.
+struct IndexWriter {
+    bytes: Vec<u8>,
+    count: u32,
+}
+impl IndexWriter {
+    fn new(entries: usize) -> Self {
+        let mut bytes = Vec::with_capacity(12 + entries * 104 + 20);
+        bytes.extend_from_slice(b"DIRC");
+        bytes.extend_from_slice(&2u32.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        Self { bytes, count: 0 }
+    }
+    fn push(&mut self, path: &str, oid: Oid, mode: u32, stat: Option<&FileStat>) {
+        let zero = FileStat::default();
+        let stat = stat.unwrap_or(&zero);
+        // Git stores and compares the low 32 bits of every field.
+        for field in [
+            stat.changed.0 as u32,
+            stat.changed.1,
+            stat.modified.0 as u32,
+            stat.modified.1,
+            0,
+            stat.inode as u32,
+            mode,
+            stat.owner.0,
+            stat.owner.1,
+            stat.size as u32,
+        ] {
+            self.bytes.extend_from_slice(&field.to_be_bytes());
+        }
+        self.bytes.extend_from_slice(oid.as_bytes());
+        self.bytes
+            .extend_from_slice(&(path.len().min(0xfff) as u16).to_be_bytes());
+        self.bytes.extend_from_slice(path.as_bytes());
+        // NUL-terminated and padded to eight bytes.
+        let padding = 8 - (62 + path.len()) % 8;
+        self.bytes.extend(std::iter::repeat_n(0, padding));
+        self.count += 1;
+    }
+    fn finish(mut self, admin: &Path) -> Result<()> {
+        self.bytes[8..12].copy_from_slice(&self.count.to_be_bytes());
+        let checksum = sha1_smol::Sha1::from(&self.bytes).digest().bytes();
+        self.bytes.extend_from_slice(&checksum);
+        // Readers of an existing view see the old or the new index, never part.
+        let pending = admin.join("index.vwork");
+        std::fs::write(&pending, &self.bytes)?;
+        std::fs::rename(pending, admin.join("index"))?;
+        Ok(())
+    }
+}
+
+#[derive(Default, Debug, Clone, serde::Serialize)]
+pub struct ViewReport {
+    pub packs_linked: usize,
+    pub packs_copied: usize,
+    pub private_objects: usize,
+}
+
 /// A disposable compatibility repository for external tools that require .git.
-/// All authoritative objects remain in Fjall. No alternates or original checkout access.
+/// All authoritative objects remain in Fjall. History is the repository's
+/// shared pack cache under this lease's own names; the view writes only what
+/// is its own: configuration, refs, index and blobs absent from history.
+/// No alternates, no original checkout access.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_build(
-    db: &Arc<Database>,
     source: &Repository,
+    history: &Path,
+    packs: &[String],
     admin: &Path,
     checkout: &Path,
     base: &str,
     entries: &Tree,
+    stats: &BTreeMap<String, FileStat>,
     mut content: impl FnMut(&Entry) -> Result<Vec<u8>>,
-) -> Result<git2::Repository> {
-    let mut options = git2::RepositoryInitOptions::new();
-    options.bare(true).external_template(false);
-    let view = git2::Repository::init_opts(admin, &options)?;
-    let mut config = view.config()?;
-    for (key, value) in [
-        ("core.bare", "false"),
-        ("core.autocrlf", "false"),
-        ("core.symlinks", "false"),
-        ("core.logAllRefUpdates", "false"),
-        ("gc.auto", "0"),
-        (
-            "core.filemode",
-            if cfg!(windows) { "false" } else { "true" },
-        ),
-    ] {
-        config.set_str(key, value)?;
+) -> Result<(git2::Repository, ViewReport)> {
+    let mut report = ViewReport::default();
+    if !admin.join("HEAD").exists() {
+        let mut options = git2::RepositoryInitOptions::new();
+        options.bare(true).external_template(false);
+        git2::Repository::init_opts(admin, &options)?;
+        std::fs::create_dir_all(admin.join("disabled-hooks"))?;
+        // The ownership record lives beside the source, not in it.
+        std::fs::write(
+            admin.join("info").join("exclude"),
+            format!("/{}\n", crate::physical::MARKER),
+        )?;
     }
-    config.set_str("core.worktree", &path_argument(checkout).to_string_lossy())?;
-    let hooks = admin.join("disabled-hooks");
-    std::fs::create_dir_all(&hooks)?;
-    config.set_str("core.hooksPath", &path_argument(&hooks).to_string_lossy())?;
+    view_config(admin, checkout)?;
+    (report.packs_linked, report.packs_copied) =
+        crate::git_cache::link(history, packs, &admin.join("objects").join("pack"))?;
+    // Views from earlier versions hold one loose file per ref, which would
+    // shadow the packed file. Fresh views have only the two empty directories.
+    let refs = admin.join("refs");
+    if walkdir::WalkDir::new(&refs)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+        .any(|entry| entry.file_type().is_file())
+    {
+        std::fs::remove_dir_all(&refs)?;
+        std::fs::create_dir_all(refs.join("heads"))?;
+        std::fs::create_dir_all(refs.join("tags"))?;
+    }
+    write_packed_refs(admin, &source.refs)?;
+    let base = Oid::from_str(base)?;
+    std::fs::write(admin.join("HEAD"), format!("{base}\n"))?;
+    let view = git2::Repository::open(admin)?;
     view.set_workdir(checkout, false)?;
     let odb = view.odb()?;
-    export_packs(db, source, &view)?;
-    let names: Vec<String> = view
-        .references()?
-        .filter_map(|r| r.ok()?.name().ok().map(String::from))
-        .collect();
-    for name in names {
-        if !source.refs.contains_key(&name) {
-            view.find_reference(&name)?.delete()?;
-        }
-    }
-    for (name, oid) in &source.refs {
-        if name != "HEAD" {
-            view.reference(name, Oid::from_str(oid)?, true, "vwork temporary view")?;
-        }
-    }
-    view.set_head_detached(Oid::from_str(base)?)?;
-    let mut converted = entries.clone();
+    ensure!(
+        odb.exists(base),
+        "base commit missing from temporary Git history"
+    );
+    let mut index = IndexWriter::new(entries.len());
+    let mut seen = std::collections::HashSet::new();
+    let mut absent = Vec::new();
     for (name, entry) in entries {
-        if entry.source != "git" {
-            let mut e = entry.clone();
-            e.oid = view.blob(&content(entry)?)?.to_string();
-            e.source = "git".into();
-            converted.insert(name.clone(), e);
+        let (oid, bytes) = if entry.source == "git" {
+            (Oid::from_str(&entry.oid)?, None)
+        } else {
+            let bytes = content(entry)?;
+            (Oid::hash_object(ObjectType::Blob, &bytes)?, Some(bytes))
+        };
+        // Virtual edits are not history. One lookup per distinct blob keeps
+        // the view complete whatever the shared packs happen to contain.
+        if seen.insert(oid) && !odb.exists_ext(oid, git2::OdbLookupFlags::NO_REFRESH) {
+            absent.push((oid, entry, bytes));
         }
+        index.push(
+            name,
+            oid,
+            u32::from_str_radix(&entry.mode, 8)?,
+            stats.get(name),
+        );
     }
-    let tree = write_tree(&view, &converted)?;
-    let mut index = view.index()?;
-    index.read_tree(&view.find_tree(tree)?)?;
-    index.write()?;
-    std::fs::write(
-        checkout.join(".git"),
-        format!("gitdir: {}\n", path_argument(admin).to_string_lossy()),
-    )?;
-    drop(index);
+    if !absent.is_empty() {
+        // One private pack however many files changed: two files, not one
+        // loose object and directory per edit.
+        let mut writer = crate::git_cache::PackWriter::create(
+            &admin.join("objects").join("pack"),
+            absent.len(),
+        )?;
+        for (oid, entry, bytes) in &absent {
+            let owned;
+            let bytes = match bytes {
+                Some(bytes) => bytes,
+                None => {
+                    owned = content(entry)?;
+                    &owned
+                }
+            };
+            ensure!(
+                Oid::hash_object(ObjectType::Blob, bytes)? == *oid,
+                "Git object integrity failure"
+            );
+            writer.full(*oid, ObjectType::Blob, bytes)?;
+        }
+        writer.finish()?;
+        report.private_objects = absent.len();
+    }
+    index.finish(admin)?;
+    let pointer = format!("gitdir: {}\n", path_argument(admin).to_string_lossy());
+    let dot_git = checkout.join(".git");
+    if std::fs::read_to_string(&dot_git).ok().as_deref() != Some(pointer.as_str()) {
+        std::fs::write(dot_git, pointer)?;
+    }
     drop(odb);
-    drop(config);
-    Ok(view)
-}
-
-/// External Git needs a filesystem ODB. Export bounded, streamed packs instead
-/// of one loose file (and its metadata/flush work) per historical object. Keep
-/// full history, tags and overlays; never borrow the user's source checkout.
-fn export_packs(db: &Arc<Database>, source: &Repository, view: &git2::Repository) -> Result<()> {
-    use std::io::Write;
-    const MAX_OBJECTS: usize = 4096;
-    const MAX_BYTES: usize = 64 * 1024 * 1024;
-    let repository = open(db, source, 3)?;
-    // Bound libgit2's delta-search memory and worker count. PackBuilder does
-    // not honor Git CLI's pack.window setting, so bound each batch as well.
-    let mut config = view.config()?;
-    config.set_i32("pack.windowMemory", 16 * 1024 * 1024)?;
-    config.set_i32("pack.deltaCacheSize", 16 * 1024 * 1024)?;
-    repository.set_config(&config)?;
-    let input = repository.odb()?;
-    let output = view.odb()?;
-    let mut objects = git_store::members(db, &source.id)?.into_iter().peekable();
-    while objects.peek().is_some() {
-        let mut builder = repository.packbuilder()?;
-        builder.set_threads(1);
-        let mut weight = 0usize;
-        while let Some(&oid) = objects.peek() {
-            if output.exists(oid) {
-                objects.next();
-                continue;
-            }
-            let (size, _) = input.read_header(oid)?;
-            if builder.object_count() > 0
-                && (builder.object_count() >= MAX_OBJECTS
-                    || weight.saturating_add(size) > MAX_BYTES)
-            {
-                break;
-            }
-            // A single large object is permitted, still bounded by the store's
-            // object limit. No whole-pack buffer or loose-object staging.
-            builder.insert_object(oid, None)?;
-            weight = weight.saturating_add(size);
-            objects.next();
-        }
-        if builder.object_count() == 0 {
-            continue;
-        }
-        let mut writer = output.packwriter()?;
-        let mut io_error = None;
-        let packed = builder.foreach(|bytes| match writer.write_all(bytes) {
-            Ok(()) => true,
-            Err(error) => {
-                io_error = Some(error);
-                false
-            }
-        });
-        if let Some(error) = io_error {
-            return Err(error.into());
-        }
-        packed?;
-        writer.commit()?;
-    }
-    Ok(())
+    // Reopen so the returned handle sees the index and private pack just written.
+    drop(view);
+    let view = git2::Repository::open(admin)?;
+    view.set_workdir(checkout, false)?;
+    Ok((view, report))
 }
 
 pub fn changed(view: &git2::Repository) -> Result<Vec<String>> {

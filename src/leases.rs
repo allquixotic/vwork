@@ -4,6 +4,7 @@ use crate::{
     engine::{Engine, RECORDS, safe_ancestors},
     git,
     model::*,
+    physical,
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -11,8 +12,13 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    time::Instant,
 };
+
+fn milliseconds(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Lease {
@@ -78,9 +84,17 @@ impl Engine {
             .temporary_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("temporary allocation lock poisoned"))?;
+        let active = self.leases()?.len();
         ensure!(
-            self.leases()?.len() < self.config.max_temporary_copies,
+            active < self.config.max_temporary_copies,
             "temporary copy limit reached; release an existing lease before allocating another"
+        );
+        // Pooled trees are physical copies too. Leases outrank them, and
+        // this lease frees a slot itself when it adopts one of its own.
+        let adoptable = usize::from(self.pooled().iter().any(|(repo, _, _)| *repo == ws.repo));
+        self.trim_pool(
+            self.config.max_temporary_copies - active - 1 + adoptable,
+            &ws.repo,
         );
         let lease = Lease {
             id: id(),
@@ -101,33 +115,77 @@ impl Engine {
         std::fs::write(root.join("owner"), &lease.id)?;
         Ok(lease)
     }
+    /// Permanent history of `repo` as shared packs holding at least `base`.
+    /// Caller owns the repository lock.
+    pub(crate) fn shared_history(
+        &self,
+        repo: &Repository,
+        base: &str,
+    ) -> Result<(PathBuf, crate::git_cache::Report)> {
+        let root = self.home.join("git-cache").join(&repo.id);
+        safe_ancestors(&root)?;
+        let report =
+            crate::git_cache::ensure(&self.db, repo, &root, &[git2::Oid::from_str(base)?])?;
+        Ok((root, report))
+    }
+    /// Returns the Git view and a receipt of the work each phase performed.
     pub(crate) fn prepare_lease(
         &self,
         lease: &mut Lease,
         ws: &Workspace,
         tree: &Tree,
-    ) -> Result<git2::Repository> {
+    ) -> Result<(git2::Repository, Value)> {
         let root = self.lease_root(lease);
         self.check_lease_owner(lease)?;
-        self.materialize(ws, tree, &root.join("tree"))?;
         let repo = self.repo(&ws.repo)?;
         let revision = self.revision(&ws.head)?;
+        let started = Instant::now();
+        let (history, shared) = self.shared_history(&repo, &revision.base)?;
+        let history_ms = milliseconds(started);
+        let started = Instant::now();
+        let destination = root.join("tree");
+        let mut adopted = !destination.exists() && self.adopt_tree(&ws.repo, &destination);
+        let files = match self.materialize_into(ws, tree, &destination, adopted) {
+            Err(_) if adopted => {
+                // A pooled tree that cannot be made pristine (a foreign file
+                // still held open, a damaged record) is only a cache miss.
+                adopted = false;
+                self.discard_tree(&destination)?;
+                self.materialize_into(ws, tree, &destination, false)?
+            }
+            other => other?,
+        };
+        let files_ms = milliseconds(started);
+        let started = Instant::now();
         let mut reader = None;
-        let view = git::prepare_build(
-            &self.db,
+        let (view, linked) = git::prepare_build(
             &repo,
+            &history,
+            &shared.files,
             &root.join("git"),
             &root.join("tree"),
             &revision.base,
             tree,
+            &files.stats,
             |entry| self.bytes(&repo, entry, &mut reader),
         )?;
+        let view_ms = milliseconds(started);
         lease.workspace = ws.id.clone();
         lease.revision = ws.head.clone();
         lease.state = "ready".into();
         lease.cleanup_error = None;
         self.lease_save(lease)?;
-        Ok(view)
+        Ok((
+            view,
+            json!({
+                "timings_ms":{"shared_history":history_ms,"files":files_ms,"git_view":view_ms},
+                "work":{
+                    "shared_history":shared,
+                    "files":{"adopted_pooled_tree":adopted,"written":files.written,"reused":files.reused,"verified":files.verified,"removed":files.removed,"bytes_written":files.bytes},
+                    "git_view":linked,
+                },
+            }),
+        ))
     }
     fn check_lease_owner(&self, lease: &Lease) -> Result<()> {
         valid_id(&lease.id)?;
@@ -155,7 +213,8 @@ impl Engine {
     /// Ignored/generated dependency trees are deliberately not archived.
     pub(crate) fn recover_lease(&self, lease: &Lease) -> Result<Option<String>> {
         let root = self.lease_root(lease).join("tree");
-        if !root.join(".vwork-managed.json").exists() {
+        let marker = root.join(physical::MARKER);
+        if !marker.exists() {
             return Ok(None);
         }
         let ws = Workspace {
@@ -165,7 +224,23 @@ impl Engine {
         };
         let (base, tree) = self.snapshot(&ws)?;
         let repo = self.repo(&ws.repo)?;
-        let mut paths: BTreeSet<String> = tree.keys().cloned().collect();
+        // A tracked file whose listing still matches what was recorded when
+        // vwork wrote it was not edited; only the others are opened. Copies
+        // from before that record existed have none, so every file is read.
+        let record = physical::Marker::read(&marker)?;
+        let recorded = record.stats();
+        let present = physical::scan(&root, &tree, &physical::directories(&tree), false)?.files;
+        let mut paths: BTreeSet<String> = tree
+            .iter()
+            .filter(|(path, entry)| {
+                let known = recorded.get(path.as_str());
+                self.config.verify_materialized_content
+                    || known.is_none()
+                    || known != present.get(*path)
+                    || record.entries.get(*path) != Some(entry)
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
         if root.join(".git").exists() {
             let view = git2::Repository::open(&root)?;
             let mut options = git2::StatusOptions::new();
@@ -316,7 +391,8 @@ impl Engine {
         self.lease_save(lease)?;
         let root = self.lease_root(lease);
         if root.exists() {
-            std::fs::remove_dir_all(root)?;
+            self.park_tree(lease, &root);
+            self.discard_tree(&root)?;
         }
         let tx = self.db.begin_write()?;
         {
@@ -330,6 +406,132 @@ impl Engine {
         tx.commit()?;
         self.db.persist()?;
         Ok(result)
+    }
+    /// Releasing must not wait for one delete per file. A rename takes the
+    /// whole tree out of the lease namespace at once; a detached worker, or the
+    /// next reaper pass after a crash, removes it. Recovery already happened.
+    fn discard_tree(&self, root: &Path) -> Result<()> {
+        let bin = self.trash_bin()?;
+        if std::fs::rename(root, bin.join("0")).is_ok() {
+            Engine::empty_trash(bin);
+            return Ok(());
+        }
+        let _ = std::fs::remove_dir(bin);
+        // An open handle inside the tree blocks a Windows directory rename.
+        // The record stays on failure, exactly as before, and is retried.
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    /// Trees a previous process renamed away but did not finish deleting.
+    /// Recent bins may still be receiving renames from a running operation.
+    fn sweep_trash(&self) {
+        let trash = self.home.join("trash");
+        if safe_ancestors(&trash).is_err() {
+            return;
+        }
+        for bin in std::fs::read_dir(trash).into_iter().flatten().flatten() {
+            let settled = bin
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|at| at.elapsed().is_ok_and(|age| age.as_secs() >= 60));
+            if settled {
+                Engine::empty_trash(bin.path());
+            }
+        }
+    }
+
+    /// Released trees waiting for the next lease of their repository:
+    /// (repository, slot directory, time parked), oldest first.
+    fn pooled(&self) -> Vec<(String, PathBuf, std::time::SystemTime)> {
+        let mut all = Vec::new();
+        let pool = self.home.join("pool");
+        if safe_ancestors(&pool).is_err() {
+            return all;
+        }
+        for repo in std::fs::read_dir(pool).into_iter().flatten().flatten() {
+            let Some(name) = repo.file_name().to_str().map(String::from) else {
+                continue;
+            };
+            for slot in std::fs::read_dir(repo.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                let parked = slot
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                all.push((name.clone(), slot.path(), parked));
+            }
+        }
+        all.sort_by_key(|(_, _, parked)| *parked);
+        all
+    }
+    /// Keep a released tree instead of deleting it file by file, only for the
+    /// next lease to recreate it file by file. One rename now; the next copy
+    /// of this repository rewrites just what differs. Under its waiting name
+    /// the record cannot be mistaken for a live materialization.
+    /// Caller owns the allocation lock; `lease` still has its record.
+    fn park_tree(&self, lease: &Lease, root: &Path) -> bool {
+        let tree = root.join("tree");
+        let Ok(active) = self.leases() else {
+            return false;
+        };
+        if self.config.pooled_tree_ttl_seconds == 0
+            || !tree.join(physical::MARKER).is_file()
+            || active.len().saturating_sub(1) + self.pooled().len()
+                >= self.config.max_temporary_copies
+        {
+            return false;
+        }
+        let slot = self.home.join("pool").join(&lease.repo).join(id());
+        let parked = safe_ancestors(&slot).is_ok()
+            && std::fs::create_dir_all(&slot).is_ok()
+            && std::fs::rename(tree.join(physical::MARKER), tree.join(physical::POOLED)).is_ok()
+            && std::fs::rename(&tree, slot.join("tree")).is_ok();
+        if !parked {
+            // Whatever remains is removed with the rest of the lease.
+            let _ = std::fs::remove_dir(&slot);
+        }
+        parked
+    }
+    /// Claim the most recently parked tree of `repo`. The rename is the claim:
+    /// a reaper retiring the same slot simply loses or wins it whole.
+    fn adopt_tree(&self, repo: &str, destination: &Path) -> bool {
+        for (_, slot, _) in self
+            .pooled()
+            .into_iter()
+            .rev()
+            .filter(|(name, _, _)| name == repo)
+        {
+            if !slot.join("tree").join(physical::POOLED).is_file() {
+                // Interrupted while parking: not a tree anyone can vouch for.
+                let _ = self.discard_tree(&slot);
+            } else if std::fs::rename(slot.join("tree"), destination).is_ok() {
+                let _ = std::fs::remove_dir(slot);
+                return true;
+            }
+        }
+        false
+    }
+    /// Retire pooled trees until at most `keep` remain, oldest first and
+    /// other repositories before `favored`.
+    fn trim_pool(&self, keep: usize, favored: &str) {
+        let mut pooled = self.pooled();
+        pooled.sort_by_key(|(repo, _, parked)| (repo == favored, *parked));
+        let excess = pooled.len().saturating_sub(keep);
+        for (_, slot, _) in pooled.into_iter().take(excess) {
+            let _ = self.discard_tree(&slot);
+        }
+    }
+    fn expire_pool(&self) {
+        let ttl = std::time::Duration::from_secs(self.config.pooled_tree_ttl_seconds);
+        for (repo, slot, parked) in self.pooled() {
+            let expired = parked.elapsed().map_or(true, |age| age >= ttl);
+            if expired || self.repo(&repo).is_err() {
+                let _ = self.discard_tree(&slot);
+            }
+        }
     }
     /// Adopt only legacy build directories whose existing vwork marker proves
     /// ownership. Moving them into the lease root avoids copying heavy outputs.
@@ -418,14 +620,18 @@ impl Engine {
                 std::fs::remove_file(alternates)?;
             }
             let (revision, tree) = self.snapshot(&ws)?;
+            let (history, shared) = self.shared_history(&repo, &revision.base)?;
             let mut reader = None;
+            // No recorded metadata: the adopted files were written long ago.
             git::prepare_build(
-                &self.db,
                 &repo,
+                &history,
+                &shared.files,
                 &root.join("git"),
                 &root.join("tree"),
                 &revision.base,
                 &tree,
+                &BTreeMap::new(),
                 |entry| self.bytes(&repo, entry, &mut reader),
             )?;
             let mut ready = lease;
@@ -435,6 +641,7 @@ impl Engine {
         Ok(())
     }
     pub fn reap_temporary(&self) -> Result<()> {
+        self.sweep_trash();
         self.cleanup_transfers()?;
         let _lifecycle = self
             .lifecycle
@@ -444,6 +651,7 @@ impl Engine {
             .temporary_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("temporary allocation lock poisoned"))?;
+        self.expire_pool();
         for mut lease in self.leases()? {
             if lease.expires_at > now() && lease.state == "ready" {
                 continue;
@@ -479,9 +687,19 @@ impl Engine {
                     Ok(record)
                 })
                 .collect::<Result<_>>()?;
-            return Ok(json!({"active":active,"recent":recent,"transfers":transfers}));
+            let pooled: Vec<Value> = self
+                .pooled()
+                .into_iter()
+                .map(|(repo, slot, parked)| {
+                    json!({"repo":repo,"path":slot,"idle_seconds":parked.elapsed().map_or(0, |age| age.as_secs())})
+                })
+                .collect();
+            return Ok(
+                json!({"active":active,"recent":recent,"transfers":transfers,"pooled":pooled}),
+            );
         }
         if op == "workspace_temporary" {
+            let started = Instant::now();
             let ws = self.workspace(args["workspace"].as_str().context("missing workspace")?)?;
             ensure!(
                 args["expected_revision"].as_str() == Some(&ws.head),
@@ -491,15 +709,26 @@ impl Engine {
             let _job = lock
                 .lock()
                 .map_err(|_| anyhow::anyhow!("repository lock poisoned"))?;
+            let repository_wait = milliseconds(started);
+            let snapshot_started = Instant::now();
             let (_, tree) = self.snapshot(&ws)?;
+            let snapshot = milliseconds(snapshot_started);
             let mut lease = self.create_lease(
                 &ws,
                 args["purpose"].as_str().context("missing purpose")?,
                 false,
                 self.ttl(args)?,
             )?;
-            self.prepare_lease(&mut lease, &ws, &tree)?;
-            return Ok(self.lease_value(&lease));
+            let (_, mut receipt) = self.prepare_lease(&mut lease, &ws, &tree)?;
+            // Phase costs travel with the result: a slow host can be diagnosed
+            // from numbers alone, without anyone seeing its files.
+            receipt["timings_ms"]["repository_wait"] = json!(repository_wait);
+            receipt["timings_ms"]["snapshot"] = json!(snapshot);
+            receipt["timings_ms"]["total"] = json!(milliseconds(started));
+            let mut value = self.lease_value(&lease);
+            value["timings_ms"] = receipt["timings_ms"].take();
+            value["work"] = receipt["work"].take();
+            return Ok(value);
         }
         let id = args["lease"].as_str().context("missing lease")?;
         valid_id(id)?;

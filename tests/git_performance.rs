@@ -233,94 +233,307 @@ fn v39_temporary_git_history_is_packed_and_complete() -> Result<()> {
     }
     assert_eq!(view.head()?.target(), ids.last().copied());
     assert_eq!(view.revparse_single("historical^{}")?.id(), ids[0]);
-    let files: Vec<_> = walkdir::WalkDir::new(view.path().join("objects"))
-        .into_iter()
-        .collect::<std::result::Result<Vec<_>, _>>()?
-        .into_iter()
-        .filter(|entry| entry.file_type().is_file())
-        .collect();
+    let files = object_files(view.path());
     assert!(
         files
             .iter()
-            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
+            .any(|path| path.extension().is_some_and(|ext| ext == "pack"))
     );
     assert!(
         files.len() < 20,
         "historical objects must be packed, got {} files",
         files.len()
     );
-    let packs: Vec<_> = files
-        .iter()
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
-        .map(|entry| Ok((entry.path().to_owned(), std::fs::read(entry.path())?)))
-        .collect::<std::io::Result<_>>()?;
-    let admin = view.path().to_owned();
     drop(odb);
     drop(view);
-    let prepare = || -> Result<()> {
-        let workspace = engine.workspace("one")?;
-        let (revision, tree) = engine.snapshot(&workspace)?;
-        vwork::git::prepare_build(
-            &engine.db,
-            &engine.repo("fixture")?,
-            &admin,
-            checkout,
-            &revision.base,
-            &tree,
-            |entry| Ok(vwork::git_store::read(&engine.db, Oid::from_str(&entry.oid)?)?.1),
-        )?;
-        Ok(())
-    };
-    prepare()?;
-    for (path, bytes) in &packs {
-        assert_eq!(
-            &std::fs::read(path)?,
-            bytes,
-            "reusing a lease must retain its existing pack"
-        );
-    }
-    let pack_count = || {
-        std::fs::read_dir(admin.join("objects/pack"))
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "pack"))
-            .count()
-    };
-    assert_eq!(
-        pack_count(),
-        packs.len(),
-        "unchanged preparation must not duplicate packs"
-    );
-    engine.call(
-        "files_write",
-        &json!({
-            "workspace":"one", "expected_revision":revision,
-            "path":"changing.txt", "content":"new virtual content"
-        }),
-    )?;
-    prepare()?;
-    assert_eq!(
-        pack_count(),
-        packs.len() + 1,
-        "export only the missing overlay object"
-    );
-    for (path, bytes) in packs {
-        assert_eq!(std::fs::read(path)?, bytes);
-    }
-    let fsck = std::process::Command::new("git")
-        .arg("-C")
-        .arg(checkout)
-        .args(["fsck", "--full"])
-        .output()?;
-    assert!(
-        fsck.status.success(),
-        "{}",
-        String::from_utf8_lossy(&fsck.stderr)
-    );
+    fsck(checkout);
     engine.call(
         "temporary_release",
         &json!({"lease":lease["id"],"discard_changes":true}),
     )?;
     assert!(!checkout.exists());
+    Ok(())
+}
+
+fn object_files(admin: &std::path::Path) -> Vec<std::path::PathBuf> {
+    walkdir::WalkDir::new(admin.join("objects"))
+        .into_iter()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.into_path())
+        .collect()
+}
+
+fn fsck(checkout: &std::path::Path) {
+    let fsck = std::process::Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["fsck", "--full"])
+        .output()
+        .unwrap();
+    assert!(
+        fsck.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fsck.stderr)
+    );
+}
+
+fn porcelain(checkout: &std::path::Path) -> String {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(status.status.success());
+    String::from_utf8(status.stdout).unwrap()
+}
+
+/// History is exported once per repository, then every copy names the same
+/// files. A copy writes only what is its own: no pack per copy, no file per
+/// ref, and virtual edits as one private pack.
+#[test]
+fn v42_temporary_copies_share_history_and_write_only_their_own_objects() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    history(&source, 140)?;
+    {
+        let repo = Repository::open(&source)?;
+        let head = repo.head()?.target().unwrap();
+        for n in 0..300 {
+            repo.reference(&format!("refs/heads/topic/{n:03}"), head, false, "fixture")?;
+        }
+    }
+    let home = temp.path().join("store");
+    let engine = Engine::open(&home, Config::default())?;
+    engine.call("repo_register", &json!({"repo":"fixture","path":source}))?;
+    for name in ["one", "two"] {
+        engine.call(
+            "workspace_create",
+            &json!({"repo":"fixture","workspace":name}),
+        )?;
+    }
+    std::fs::rename(&source, source.with_extension("offline"))?;
+    let temporary = |workspace: &str| {
+        engine.call(
+            "workspace_temporary",
+            &json!({
+                "workspace":workspace,
+                "expected_revision":engine.workspace(workspace).unwrap().head,
+                "purpose":"shared history regression"
+            }),
+        )
+    };
+    let permanent = vwork::git_store::permanent_members(&engine.db, "fixture")?.len();
+    let first = temporary("one")?;
+    assert_eq!(first["work"]["shared_history"]["scanned"], true);
+    assert_eq!(
+        first["work"]["shared_history"]["exported_objects"],
+        permanent
+    );
+    assert!(
+        first["work"]["shared_history"]["reused_deltas"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(first["work"]["git_view"]["packs_linked"], 2);
+    assert_eq!(first["work"]["git_view"]["packs_copied"], 0);
+    assert_eq!(first["work"]["git_view"]["private_objects"], 0);
+    let shared = home.join("git-cache/fixture/objects/pack");
+    let packs = || -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut all: Vec<_> = std::fs::read_dir(&shared)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .map(|path| (path.clone(), std::fs::read(path).unwrap()))
+            .collect();
+        all.sort();
+        all
+    };
+    let exported = packs();
+    assert_eq!(exported.len(), 2, "one pack and its index");
+
+    engine.call(
+        "files_write",
+        &json!({
+            "workspace":"two", "expected_revision":engine.workspace("two")?.head,
+            "path":"changing.txt", "content":"new virtual content"
+        }),
+    )?;
+    let second = temporary("two")?;
+    // Same references, base present: completeness needs no storage scan.
+    assert_eq!(second["work"]["shared_history"]["scanned"], false);
+    assert_eq!(second["work"]["shared_history"]["exported_objects"], 0);
+    assert_eq!(second["work"]["git_view"]["packs_linked"], 2);
+    assert_eq!(second["work"]["git_view"]["packs_copied"], 0);
+    assert_eq!(second["work"]["git_view"]["private_objects"], 1);
+    assert_eq!(packs(), exported, "shared packs are immutable");
+
+    let edited = git2::Oid::hash_object(git2::ObjectType::Blob, b"new virtual content")?;
+    for (lease, own_packs) in [(&first, 0), (&second, 1)] {
+        let checkout = std::path::Path::new(lease["path"].as_str().unwrap());
+        let view = Repository::open(checkout)?;
+        let files = object_files(view.path());
+        assert_eq!(files.len(), 2 + own_packs * 2, "{files:?}");
+        for (path, bytes) in &exported {
+            let linked = view
+                .path()
+                .join("objects/pack")
+                .join(path.file_name().unwrap());
+            assert_eq!(&std::fs::read(&linked)?, bytes);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                // The same file under another name: nothing was copied.
+                assert_eq!(
+                    std::fs::metadata(&linked)?.ino(),
+                    std::fs::metadata(path)?.ino()
+                );
+            }
+        }
+        // 300 topic branches, their remotes-free refs and the tag: one file.
+        assert_eq!(
+            walkdir::WalkDir::new(view.path().join("refs"))
+                .into_iter()
+                .filter_map(std::result::Result::ok)
+                .filter(|entry| entry.file_type().is_file())
+                .count(),
+            0
+        );
+        assert_eq!(
+            view.references()?.count(),
+            engine.repo("fixture")?.refs.len() - 1
+        );
+        assert_eq!(view.odb()?.exists(edited), own_packs == 1);
+        drop(view);
+        fsck(checkout);
+    }
+    // Recorded metadata makes an untouched copy clean without reading it, and
+    // a virtual edit appears staged against the base commit.
+    assert_eq!(
+        porcelain(std::path::Path::new(first["path"].as_str().unwrap())),
+        ""
+    );
+    assert_eq!(
+        porcelain(std::path::Path::new(second["path"].as_str().unwrap())),
+        "M  changing.txt\n"
+    );
+
+    // A commit adds permanent objects without touching imported references;
+    // only those objects are exported, and earlier copies keep their packs.
+    let committed = engine.call(
+        "workspace_commit",
+        &json!({
+            "workspace":"two", "expected_revision":engine.workspace("two")?.head,
+            "message":"commit virtual edit"
+        }),
+    )?;
+    engine.call(
+        "workspace_create",
+        &json!({"repo":"fixture","workspace":"three","reference":committed["commit"]}),
+    )?;
+    let third = temporary("three")?;
+    assert_eq!(third["work"]["shared_history"]["scanned"], true);
+    let added = third["work"]["shared_history"]["exported_objects"]
+        .as_u64()
+        .unwrap();
+    assert!((1..10).contains(&added), "incremental export, got {added}");
+    assert_eq!(third["work"]["git_view"]["packs_linked"], 4);
+    assert_eq!(third["work"]["git_view"]["private_objects"], 0);
+    let after = packs();
+    assert_eq!(after.len(), 4);
+    for pack in &exported {
+        assert!(after.contains(pack));
+    }
+    let checkout = std::path::Path::new(third["path"].as_str().unwrap());
+    assert_eq!(
+        Repository::open(checkout)?
+            .head()?
+            .target()
+            .unwrap()
+            .to_string(),
+        committed["commit"].as_str().unwrap()
+    );
+    fsck(checkout);
+    assert_eq!(porcelain(checkout), "");
+
+    // Releasing a copy removes names, never the shared files.
+    for lease in [&first, &second, &third] {
+        engine.call(
+            "temporary_release",
+            &json!({"lease":lease["id"],"discard_changes":true}),
+        )?;
+        assert!(!std::path::Path::new(lease["path"].as_str().unwrap()).exists());
+    }
+    assert_eq!(packs(), after);
+    let again = temporary("one")?;
+    assert_eq!(again["work"]["shared_history"]["scanned"], false);
+    fsck(std::path::Path::new(again["path"].as_str().unwrap()));
+    Ok(())
+}
+
+/// A damaged or half-written cache is never trusted: it is rebuilt from the
+/// authoritative store, and stray names are removed.
+#[test]
+fn v42_shared_history_is_rebuilt_when_its_files_are_not_vouched_for() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let source = temp.path().join("source");
+    history(&source, 12)?;
+    let home = temp.path().join("store");
+    let engine = Engine::open(&home, Config::default())?;
+    engine.call("repo_register", &json!({"repo":"fixture","path":source}))?;
+    engine.call(
+        "workspace_create",
+        &json!({"repo":"fixture","workspace":"one"}),
+    )?;
+    let temporary = || {
+        engine.call(
+            "workspace_temporary",
+            &json!({
+                "workspace":"one",
+                "expected_revision":engine.workspace("one").unwrap().head,
+                "purpose":"cache recovery regression"
+            }),
+        )
+    };
+    let release = |lease: &serde_json::Value| {
+        engine
+            .call(
+                "temporary_release",
+                &json!({"lease":lease["id"],"discard_changes":true}),
+            )
+            .unwrap();
+    };
+    release(&temporary()?);
+    let shared = home.join("git-cache/fixture/objects/pack");
+    let pack = std::fs::read_dir(&shared)?
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "pack"))
+        .unwrap();
+    // Truncation, as after a power loss, and debris from an interrupted export.
+    let length = std::fs::metadata(&pack)?.len();
+    #[allow(clippy::permissions_set_readonly_false)]
+    {
+        let mut permissions = std::fs::metadata(&pack)?.permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&pack, permissions)?;
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&pack)?
+        .set_len(length / 2)?;
+    std::fs::write(shared.join("tmp-interrupted.pack"), b"partial")?;
+    let lease = temporary()?;
+    assert_eq!(lease["work"]["shared_history"]["scanned"], true);
+    assert!(
+        lease["work"]["shared_history"]["exported_objects"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(!shared.join("tmp-interrupted.pack").exists());
+    assert_eq!(std::fs::read_dir(&shared)?.count(), 2);
+    fsck(std::path::Path::new(lease["path"].as_str().unwrap()));
+    release(&lease);
     Ok(())
 }

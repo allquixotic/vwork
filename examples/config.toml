@@ -10,6 +10,12 @@ temporary_ttl_seconds = 1800
 temporary_max_ttl_seconds = 86400
 max_temporary_copies = 4
 max_recovery_bytes = 134217728
+# Keep a released source tree for the next temporary copy of its repository.
+# Pooled trees count toward max_temporary_copies. 0 deletes on release.
+pooled_tree_ttl_seconds = 14400
+# Read every materialized file back on reuse instead of trusting recorded
+# size and timestamps. One open and read per file per operation.
+verify_materialized_content = false
 
 # Automatic compaction: hourly, input idle >5 min, estimated free space >1 GB
 auto_compact = true # Legacy compatibility; Fjall manages compaction

@@ -85,9 +85,12 @@ The Windows state directory inherits its parent ACL; use your private profile.
   temporary/<lease>/
     owner                        # ownership marker; journal also in Fjall
     tree/                        # temporary source copy, .git pointer
-    git/                         # disposable exported Git objects/index/refs
+    git/                         # config, packed-refs, index; history packs are hard links
     targets/, environments/      # package outputs and environments
     artifacts/, uv-cache/        # results and uv cache, removed with lease
+  git-cache/<repo>/objects/pack/ # derived history packs shared by every lease; state.json vouches for them
+  pool/<repo>/<slot>/tree/       # released source trees waiting for the next lease
+  trash/<id>/                    # renamed away; deleted in the background
   transfers/<id>/                # temporary libgit2 transfer staging only
 ```
 
@@ -101,9 +104,41 @@ migration, the Fjall database contains the source/history needed for restoration
 also keep config and any deliberately retained physical artifacts.
 
 Native tools cannot read Fjall directly. An explicit temporary request or configured
-build exports a leased copy with private Git objects, HEAD/index and refs. No
-alternates point outside the lease. Builds reuse a lease per repository and pin
-its revision. Package targets/environments/artifacts are under that lease, so
+build exports a leased copy with its own HEAD, index and refs. No alternates point
+outside the lease. Builds reuse a lease per repository and pin its revision.
+
+### What a temporary copy costs
+
+A copy is priced by what differs, not by the size of the repository:
+
+| Part | Work per copy | How |
+|---|---|---|
+| Git history | two hard links per shared pack | History is transcoded from Fjall into `git-cache/<repo>` once, reusing stored deltas, and extended only when references or the requested base change. Packs are immutable, so every lease names the same files. Another volume or a filesystem without links falls back to copying. |
+| Refs | one file | `packed-refs`, however many branches and tags exist. |
+| Index | one file | Written directly with the size and timestamps of each materialized file, so Git and libgit2 compare metadata instead of rereading sources. |
+| Virtual edits | one private pack | Blobs absent from shared history, for this lease only. |
+| Source tree, first copy | one create per file | A few workers; one open per file. Files of a new tree share a modification time two seconds in the past so the index is never racily clean. |
+| Source tree, later copies | renames plus what changed | Release renames the tree into `pool/`. The next lease of that repository adopts it, lists each tracked directory once, moves anything vwork did not write into `trash/`, and rewrites only files whose entry or recorded metadata differs. |
+| Release | renames | Recovery opens only files whose metadata changed; deletion happens in the background. |
+
+`.vwork-managed.json` in each tree records, for every file, the metadata observed
+when vwork finished writing it. A file whose listing still matches is not opened.
+This is the trust Git places in its index: an in-place edit that preserves both
+length and modification time is invisible on filesystems without a change time
+(Unix change times and Windows creation times are compared where available).
+Set `verify_materialized_content = true` to read every file back instead.
+
+Pooled trees are physical copies: they count toward `max_temporary_copies`, are
+displaced by new leases, expire after `pooled_tree_ttl_seconds` (default four
+hours; zero disables pooling) and are listed by `temporary_list`. A pooled tree
+carries its record under another name, so nothing recovers edits from it.
+`workspace_temporary` returns `timings_ms` and `work` (files written, reused and
+removed; packs linked; history objects exported) so a slow host can be diagnosed
+from numbers alone.
+
+Shared packs are a cache. Deleting `git-cache/` costs the next copy one export.
+A pack whose length differs from `state.json`, or any name it does not list, is
+discarded and rebuilt from Fjall. Package targets/environments/artifacts are under that lease, so
 release removes the heavy state together. Global Cargo/npm/pip caches remain
 owned by those tools; custom human-configured output locations remain explicit.
 
@@ -117,7 +152,8 @@ visible in `temporary_list` and still count against allocation limits. When the
 daemon is stopped, cleanup resumes at its next start; there is no external service.
 
 Before cleanup or reuse, changed tracked files and nonignored source additions
-are saved into a separate `recovery-*` workspace. Original virtual workspaces are
+are saved into a separate `recovery-*` workspace. Changed means metadata differing
+from the tree's record, then content differing from the workspace. Original virtual workspaces are
 unchanged. Generated dependency/cache directories are excluded. Recovery is capped
 by per-file, result-count and 128 MiB total limits; exceeding a cap preserves the
 copy and reports an error for explicit import or intentional discard. This is a

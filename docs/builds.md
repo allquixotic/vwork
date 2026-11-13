@@ -55,16 +55,19 @@ for managed actions; custom tasks remain useful for other tools and unusual flag
 
 ## Git version discovery without a clone
 
-The build tree contains a regular `.git` pointer to `<lease>/git`. Objects and
-refs are exported from Fjall using git2/libgit2; no original Git directory or
-alternates are required. This disk view exists only for tools needing native Git,
-and is removed with the lease. Virtual reads and edits never require it.
+The build tree contains a regular `.git` pointer to `<lease>/git`. History is
+exported from Fjall once per repository into shared immutable packs, which each
+lease hard-links; no original Git directory or alternates are required. This
+disk view exists only for tools needing native Git, and is removed with the
+lease. Virtual reads and edits never require it.
 
 Before each task or package action:
 
 1. HEAD becomes the workspace's real **base Git commit**.
-2. Heads, tags and remote-tracking ref names/OIDs are refreshed from Fjall.
-3. The private index becomes the complete virtual snapshot. Compressed overlay
+2. Heads, tags and remote-tracking ref names/OIDs are refreshed from Fjall as
+   one `packed-refs` file.
+3. The private index becomes the complete virtual snapshot, with the metadata
+   of each materialized file so status checks do not reread sources. Overlay
    content gets Git objects only in the private admin directory.
 4. Git-aware tools run normally from the build tree or a project subdirectory.
 
